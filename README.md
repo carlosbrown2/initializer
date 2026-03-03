@@ -1,6 +1,6 @@
 # Agent Template
 
-A GitHub repo template for AI-assisted development using the Ralph loop and Compound Engineeerinng patterns with [Beads](https://github.com/steveyegge/beads) issue tracking.
+A GitHub repo template for AI-assisted development using the Ralph loop and Compound Engineerinng patterns with [Beads](https://github.com/steveyegge/beads) issue tracking.
 
 `project-kickoff-prompt.md` does the heavy lifting of guiding the agent to build the development infrastructure other agents will use, by interacting with you the user.
 
