@@ -299,6 +299,8 @@ Set up pre-commit hooks that enforce hard constraints the verification gate alon
 1. **Scope enforcement** — Each bead description declares its in-scope files/directories (see Phase 2b). The pre-commit hook rejects commits that modify files outside the declared scope. This prevents agents from making "drive-by" changes to unrelated code.
 2. **Dependency hallucination check** — Run `dep-hallucinator` (or equivalent registry validation) against any changes to dependency manifests (requirements.txt, package.json, pyproject.toml, Cargo.toml, etc.). Reject commits that introduce packages not found in their respective registries or that match known typosquat patterns.
 3. **CLAUDE.md size guard** — Reject commits that push `CLAUDE.md` beyond the line limit (default: 200 lines). Forces the agent to offload domain knowledge to `docs/skills/` instead.
+4. **Commit message format validation** — A commit-msg hook enforces that all commit messages start with a valid type prefix (`feat`, `review`, `refactor`, `docs`, `fix`, `chore`, `test`). This structurally enforces the naming convention from `prompt.md`.
+5. **Review bead write protection** — When `.current-bead-type` contains `review`, the pre-commit hook rejects changes to any file outside `docs/reviews/`. The agent writes this marker when claiming a bead and removes it on close.
 
 These hooks are **hard enforcement** — they block the commit regardless of what the prompt says. The prompt also instructs agents to respect scope and validate dependencies (soft guidance), but the hooks are the backstop.
 
@@ -373,6 +375,7 @@ The prompt must also instruct the agent to emit a **confidence signal** after co
 `ralph.sh` additional responsibilities:
 - **Compaction check:** Before each iteration, check if `progress.txt` exceeds 500 lines or if 10 iterations have passed since last compaction. If either, run the compaction procedure (see Phase 1f) before spawning the agent.
 - **Confidence routing:** After a bead completes, check the confidence level. If confidence is **HIGH** AND the verification gate passed: auto-land the commit without waiting for human approval, regardless of bead type. **MEDIUM** confidence pauses for human review. **LOW** always pauses. The review triad exists to catch implementation mistakes — requiring human approval before the triad can run defeats the purpose of the Ralph loop. Log all auto-land decisions for auditability.
+- **Exit signal routing:** Handle structured exit states beyond BEAD_DONE/COMPLETE. `BLOCKED` auto-files a blocker bead, unclaims the current bead, and proceeds. `REWORK_REQUIRED` re-opens the prerequisite bead and unclaims the current bead. Both reset retry tracking and log to the confidence log.
 - **Semantic index refresh:** After each implementation bead lands (if semantic search is set up), re-index the codebase.
 
 **Confidence routing override:** The default auto-land policy can be overridden per-project in `CLAUDE.md` under a `## Confidence Routing` section. Options:

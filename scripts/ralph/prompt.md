@@ -22,6 +22,12 @@ Inspect the bead title for a type prefix. Branch accordingly:
 
 If no prefix is present, treat the bead as **Implementation** (the default).
 
+**After determining the bead type**, write it to `.current-bead-type` so pre-commit hooks can enforce constraints:
+```bash
+echo "<type>" > .current-bead-type   # one of: impl, review, pare, compound
+```
+This file is consumed by the review write-protection hook. Clean it up in Step 3 (Close).
+
 ### Check for Retry State
 
 After claiming a bead, check if `scripts/ralph/retry_state.json` exists.
@@ -98,8 +104,9 @@ Learning feedback loop — extract lessons from a review+pare cycle into durable
 ## Step 3: Close
 
 1. Close the issue: `bd close <id>`
-2. Append progress to `scripts/ralph/archive.txt` (format below)
-3. Emit a confidence signal for the completed bead:
+2. Remove the bead type marker: `rm -f .current-bead-type`
+3. Append progress to `scripts/ralph/archive.txt` (format below)
+4. Emit a confidence signal for the completed bead:
 
 ```
 <confidence level="HIGH|MEDIUM|LOW">One-line rationale</confidence>
@@ -114,14 +121,30 @@ Guidance:
 
 You are DONE for this iteration. Do NOT check for more stories. Do NOT start another story.
 
-1. Emit the bead-done signal: `<promise>BEAD_DONE</promise>`
-2. Run `bd ready` ONLY to check if all stories are finished.
+1. Emit the appropriate exit signal (see below)
+2. If you emitted `BEAD_DONE`, run `bd ready` ONLY to check if all stories are finished.
    - If no more stories remain, ALSO reply with: `<promise>COMPLETE</promise>`
 3. Output your progress report and stop immediately. The ralph loop will invoke you again for the next story.
 
-**Signal summary:**
-- `<promise>BEAD_DONE</promise>` — emitted after EVERY completed bead (tells ralph.sh this iteration succeeded)
-- `<promise>COMPLETE</promise>` — emitted ONLY when `bd ready` returns no more work (tells ralph.sh to exit the loop)
+**Exit signals — emit exactly ONE of these:**
+
+| Signal | When to use | What ralph.sh does |
+|--------|------------|-------------------|
+| `<promise>BEAD_DONE</promise>` | Bead completed successfully | Reset retry state, proceed to next iteration |
+| `<promise>BLOCKED</promise>` | Architectural concern, missing dependency, or external blocker prevents progress | Auto-file a blocker bead, unclaim current bead, proceed to next iteration |
+| `<promise>REWORK_REQUIRED</promise>` | Prior bead's work is insufficient — current bead (review/pare/compound) cannot proceed | Re-open the prerequisite bead, unclaim current bead, proceed to next iteration |
+| `<promise>COMPLETE</promise>` | `bd ready` returns no more work | Exit the ralph loop |
+
+**When to use BLOCKED:**
+- You discover an architectural issue that requires human decision-making
+- An external dependency or service is unavailable
+- The bead's requirements are contradictory or ambiguous and cannot be resolved from existing docs
+- Always include a reason: `<promise>BLOCKED</promise>` followed by `<blocked-reason>description of the blocker</blocked-reason>`
+
+**When to use REWORK_REQUIRED:**
+- A review bead finds critical issues (P1) in the implementation that must be fixed before review can complete
+- A pare-down bead finds the code is untestable or broken in ways the review didn't catch
+- Always include a reason: `<promise>REWORK_REQUIRED</promise>` followed by `<rework-reason>description of what needs fixing</rework-reason>`
 
 ---
 

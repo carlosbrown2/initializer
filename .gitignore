@@ -2,6 +2,7 @@
 scripts/ralph/retry_state.json
 scripts/ralph/confidence.log
 scripts/ralph/archive.txt
+.current-bead-type
 
 # OS
 .DS_Store

@@ -75,9 +75,12 @@ source scripts/ralph/ralph.sh --tool amp 50
 
 Features:
 - **Confidence routing** — HIGH confidence + green gate = auto-land. MEDIUM/LOW pause for review.
+- **Structured exit states** — `BLOCKED` auto-files blockers, `REWORK_REQUIRED` re-opens prerequisite beads. Both unclaim and proceed.
 - **Retry tracking** — 3 failures on the same bead triggers automatic escalation.
 - **Progress compaction** — Archives old entries to keep context windows clean.
 - **Rate limit detection** — Exits gracefully on API limits.
+- **Commit format validation** — commit-msg hook enforces `<type>: [ID] - <title>` convention.
+- **Review write protection** — Pre-commit hook blocks source changes during review beads.
 
 ### Dependency Hallucination Detection
 

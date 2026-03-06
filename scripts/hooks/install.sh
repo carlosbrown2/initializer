@@ -58,6 +58,22 @@ fi
 #   fi
 # fi
 
+# --- Review bead write protection ---
+# If the current bead type is "review", only allow changes to docs/reviews/
+BEAD_TYPE_FILE="$PROJECT_ROOT/.current-bead-type"
+if [ -f "$BEAD_TYPE_FILE" ]; then
+  BEAD_TYPE=$(cat "$BEAD_TYPE_FILE" | tr -d '[:space:]')
+  if [ "$BEAD_TYPE" = "review" ]; then
+    NON_REVIEW_FILES=$(git diff --cached --name-only | grep -v "^docs/reviews/" || true)
+    if [ -n "$NON_REVIEW_FILES" ]; then
+      echo "BLOCKED: Review beads are read-only — only docs/reviews/ files may be modified."
+      echo "  Rejected files:"
+      echo "$NON_REVIEW_FILES" | sed 's/^/    /'
+      exit 1
+    fi
+  fi
+fi
+
 # --- Scope enforcement (bead-level) ---
 # This is enforced by convention. The bead description declares in-scope
 # files/directories. To enable hard enforcement, uncomment and configure:
@@ -87,7 +103,37 @@ HOOK_EOF
 
 chmod +x "$GIT_HOOKS_DIR/pre-commit"
 
-echo "Pre-commit hooks installed successfully."
-echo "  - CLAUDE.md size guard (active)"
-echo "  - Dependency hallucination check (commented out — uncomment after installing dep-hallucinator)"
-echo "  - Scope enforcement (commented out — uncomment to enable)"
+# --- Commit-msg hook (commit message format validation) ---
+cat > "$GIT_HOOKS_DIR/commit-msg" << 'HOOK_EOF'
+#!/bin/bash
+# Commit-msg hook: enforce ralph bead commit message format
+set -euo pipefail
+
+MSG=$(cat "$1")
+
+# Allow merge commits
+if echo "$MSG" | head -1 | grep -qE "^Merge "; then
+  exit 0
+fi
+
+# Allowed prefixes: feat, review, refactor, docs, fix, chore, test
+# Format: <type>: [<bead-id>] - <title>
+#   or:   <type>: <description>  (for non-bead commits)
+if ! echo "$MSG" | head -1 | grep -qE "^(feat|review|refactor|docs|fix|chore|test): "; then
+  echo "BLOCKED: Commit message must start with a valid type prefix."
+  echo "  Allowed: feat|review|refactor|docs|fix|chore|test"
+  echo "  Format:  <type>: [Story ID] - <title>"
+  echo "  Got:     $(echo "$MSG" | head -1)"
+  exit 1
+fi
+
+exit 0
+HOOK_EOF
+
+chmod +x "$GIT_HOOKS_DIR/commit-msg"
+
+echo "Hooks installed successfully."
+echo "  - Pre-commit: CLAUDE.md size guard (active)"
+echo "  - Pre-commit: Dependency hallucination check (commented out — uncomment after installing dep-hallucinator)"
+echo "  - Pre-commit: Scope enforcement (commented out — uncomment to enable)"
+echo "  - Commit-msg: Format validation (active)"
