@@ -1,12 +1,16 @@
-# Agent Template
+# Initializer
 
-A GitHub repo template for AI-assisted development using the Ralph loop and Compound Engineerinng patterns with [Beads](https://github.com/steveyegge/beads) issue tracking.
+A GitHub repo template that acts as an **initializer agent** — it sets up the development infrastructure, environment, and project scaffolding that subsequent coding agents will use. Built on the Ralph loop and Compound Engineering patterns with [Beads](https://github.com/steveyegge/beads) issue tracking.
 
-`project-kickoff-prompt.md` does the heavy lifting of guiding the agent to build the development infrastructure other agents will use, by interacting with you the user.
+Inspired by the [initializer agent pattern](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) from Anthropic's engineering team: a specialized first-session agent that creates the foundation (project rules, dev scripts, progress tracking, verification gates) so every subsequent agent session starts with clean context and clear direction.
+
+`project-kickoff-prompt.md` does the heavy lifting of guiding the agent through this initialization, interacting with you the user to make all key decisions upfront.
+
+Your creativity and thought are needed to use Initializer properly. You wouldn't want it any other way.
 
 ## Quick Start
 
-1. Click **"Use this template"** on GitHub to create a new repo from this template.
+1. Click **"Use this template"** on GitHub to create a new repo from Initializer.
 
 2. Install dependencies:
    ```bash
@@ -23,12 +27,10 @@ A GitHub repo template for AI-assisted development using the Ralph loop and Comp
 
 3. Direct your agent to walk through `project-kickoff-prompt.md`. It guides the agent through the full workflow: spec (PRD), beads, implementation, and review.
 
-Note: the spec is not automatically generated from a one sentence description. It is an iterative process that requires your creativity and guidance. The more clarity you bring here, the better the outcome.
-
 ## What's Included
 
 ```
-project-kickoff-prompt.md   # The main workflow prompt — paste into your agent
+project-kickoff-prompt.md   # The initializer — guides the agent through full project setup
 CLAUDE.md                   # Skeleton project rules (filled in during Phase 1)
 progress.txt                # Running log with cross-session pattern transfer
 scripts/
@@ -49,13 +51,15 @@ tests/
 
 ## How It Works
 
+The initializer walks you through 5 phases. Phase 1 is the core initialization — it produces all the artifacts subsequent agents need. Phases 2-5 handle planning and execution.
+
 ### The 5 Phases
 
-1. **Spec** — Discovery, research, approach selection, PRD, backpressure design, tooling setup
+1. **Spec (Initialization)** — Discovery, research, approach selection, PRD, backpressure design, tooling setup
 2. **Beads** — Break the PRD into dependency-aware implementation beads (quartets: impl, review, pare-down, compound)
 3. **Implementation (Ralph Loop)** — Each iteration: fresh agent, one bead, commit, stop. Memory persists via git, CLAUDE.md, skills, and progress.txt
 4. **Holistic Review** — Cross-cutting review across all completed work
-5. **Final Compound** — Project-level learnings, regression suite review, template updates
+5. **Final Compound** — Project-level learnings, regression suite review, Initializer updates
 
 ### The Ralph Loop
 
@@ -102,7 +106,8 @@ If `dep-hallucinator` is unavailable for your ecosystem, substitute with manual 
 
 ## Credits
 
-- [The Ralph Loop](https://ghuntley.com/loop/) by Geoff Huntley — the original pattern this template is built around
+- [Effective Harnesses for Long-Running Agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) by Anthropic Engineering — the initializer agent pattern and shift-handoff philosophy that inspired this project's name and structure
+- [The Ralph Loop](https://ghuntley.com/loop/) by Geoff Huntley — the original loop pattern Initializer is built around
 - [Compound Engineering](https://every.to/source-code/compound-engineering-the-definitive-guide) by Every — the guide to making every unit of AI-assisted work compound into the next
 
 ## License

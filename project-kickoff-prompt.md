@@ -29,7 +29,11 @@ If the domain warrants it, produce a standalone reference document in `docs/` (e
 - **Semantic similarity** (find code that does something similar, find related patterns, "how do we handle X"): semantic code search via the project's vector index (see Phase 1f setup)
 - When unsure, start with grep. Escalate to semantic search when grep returns too many irrelevant results or when the query is conceptual rather than lexical.
 
-**Large codebases (100K+ lines):** Evaluate semantic MCP tools (e.g., [Context+](https://github.com/ForLoopCodes/contextplus)) that provide embedding-based code search, blast radius analysis, and spectral clustering. These add little value for small repos where grep and AST navigation suffice, but significantly reduce navigation overhead in large or inconsistently-named codebases.
+**Large codebases (100K+ lines):** Evaluate tools that reduce navigation overhead — grep and AST navigation don't scale well when naming is inconsistent or the query is conceptual. Options:
+- **Semantic MCP tools** (e.g., [Context+](https://github.com/ForLoopCodes/contextplus)) — embedding-based code search, blast radius analysis, and spectral clustering. Good for "find similar" and conceptual queries.
+- **Context compilation via RLM** (e.g., [rlm_repl](https://github.com/fullstackwebdev/rlm_repl)) — loads the full repo into a REPL workspace (not into tokens), then programmatically traverses, slices, and searches it to build a minimal context pack for the current task. Treats tokens as compute rather than storage — the model receives a pre-compiled summary instead of raw source trees. Useful when the repo is too large for even semantic search to keep context clean.
+
+These add little value for small repos where grep suffices, but at scale they prevent context windows from filling with irrelevant code.
 
 ### 1c. Approach Selection
 Present the top approaches with tradeoffs. I will pick one. Do not proceed until I confirm.
@@ -69,6 +73,7 @@ Start from the **backpressure catalog** below. For each category, determine whic
 | **Dependency vulnerability scanning** (e.g., pip-audit, npm audit, Dependabot, Snyk) | Known CVEs in transitive dependencies, outdated packages with security patches | Always — your code may be correct but your dependencies aren't |
 | **Dependency hallucination detection** (e.g., dep-hallucinator, manual registry checks) | Packages recommended by AI that don't exist or are typosquat/slopsquat targets | Always — runs in every verification gate pass. See Standing Rules for details |
 | **Mutation testing** (e.g., mutmut, cosmic-ray for Python; Stryker for JS/TS) | Weak test suites that pass but don't actually catch bugs; tests that assert nothing meaningful | When you need confidence that your test suite is effective, not just green |
+| **Browser/E2E automation** (e.g., Puppeteer MCP, Playwright, Cypress) | Visual regressions, broken user flows, client-server integration failures | When the project has a UI — agents can verify features the way a human would, catching issues unit tests miss |
 
 **Concurrency & data race prevention** — catches bugs from parallelism and shared state. These are among the hardest bugs to reproduce and easiest to miss:
 
@@ -443,7 +448,7 @@ The per-story compound beads captured story-level learnings. This phase captures
 1. **Capture** — What worked about the overall process? What didn't? What would you change for the next project?
 2. **Update** — Finalize `CLAUDE.md`. Remove rules now enforced by code (tests, linters, type system, CI gates, pre-commit hooks). Review `docs/skills/` for accuracy — prune stale skill files, consolidate overlapping ones.
 3. **Regression suite review** — Verify `tests/regression/` covers every bug class found during the project. For each class of bug found: would the system catch it automatically next time? If not, add a regression test, lint rule, hook, or contract. Ensure the regression suite is wired into CI/pre-push (it does not run in every bead iteration gate, only on CI/pre-push).
-4. **Update this kickoff prompt** — If the project revealed improvements to this workflow, propose updates to `docs/project-kickoff-prompt.md` for the next project.
+4. **Update the initializer** — If the project revealed improvements to this workflow, propose updates to `project-kickoff-prompt.md` for the next project.
 
 ---
 

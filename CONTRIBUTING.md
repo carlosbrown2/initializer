@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in improving this template. Contributions are welcome, whether it's fixing a bug in the ralph loop, refining the kickoff prompt, or suggesting new backpressure techniques.
+Thanks for your interest in improving Initializer. Contributions are welcome, whether it's fixing a bug in the ralph loop, refining the kickoff prompt, or suggesting new backpressure techniques.
 
 ## How to Contribute
 

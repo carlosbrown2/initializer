@@ -1,6 +1,6 @@
 #!/bin/bash
 # Install pre-commit hooks for structural constraint enforcement.
-# Run this once after cloning a project created from this template.
+# Run this once after cloning a project created from Initializer.
 #
 # Hooks installed:
 #   1. Scope enforcement — rejects commits touching files outside the current bead's scope
