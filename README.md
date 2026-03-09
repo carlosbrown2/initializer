@@ -8,6 +8,26 @@ Inspired by the [initializer agent pattern](https://www.anthropic.com/engineerin
 
 Your creativity and thought are needed to use Initializer properly. You wouldn't want it any other way.
 
+## How It Works
+
+The initializer walks you through 5 phases. Phase 1 is the core initialization — it produces all the artifacts subsequent agents need. Phases 2-5 handle planning and execution.
+
+### The 5 Phases
+
+1. **Spec (Initialization)** — Discovery, research, approach selection, PRD, backpressure design, tooling setup
+2. **Beads** — Break the PRD into dependency-aware implementation beads (quartets: impl, review, pare-down, compound)
+3. **Implementation (Ralph Loop)** — Each iteration: fresh agent, one bead, commit, stop. Memory persists via git, CLAUDE.md, skills, and progress.txt
+4. **Holistic Review** — Cross-cutting review across all completed work
+5. **Final Compound** — Project-level learnings, regression suite review, Initializer updates
+
+### Key Properties
+
+- **Fresh context per task** — Each bead runs in a new agent session. No context rot across long projects — memory persists through git, `CLAUDE.md`, skills, and `progress.txt`, not conversation history.
+- **Built-in quality loop** — Every feature goes through a quartet: implement → review → simplify → learn. Quality is structural, not optional.
+- **Self-improving codebase** — Compound beads feed discovered patterns back into project knowledge, so each iteration is better than the last.
+- **Tunable autonomy** — Confidence routing lets you dial human oversight from full (`auto-land: none`) to zero (`auto-land: all`). The agent self-escalates when it's stuck.
+- **Structural enforcement** — Rules are enforced by hooks and gates, not just prompt instructions. If a constraint matters, it has a mechanical backstop.
+
 ## Quick Start
 
 1. Click **"Use this template"** on GitHub to create a new repo from Initializer.
@@ -26,6 +46,22 @@ Your creativity and thought are needed to use Initializer properly. You wouldn't
    ```
 
 3. Direct your agent to walk through `project-kickoff-prompt.md`. It guides the agent through the full workflow: spec (PRD), beads, implementation, and review.
+
+## The Ralph Loop
+
+Once initialization is complete, `ralph.sh` runs the implementation loop — each iteration spawns a fresh agent that completes exactly one bead:
+
+```bash
+# Run with Claude Code (default)
+source scripts/ralph/ralph.sh
+
+# Run with Amp
+source scripts/ralph/ralph.sh --tool amp
+
+# Limit iterations
+source scripts/ralph/ralph.sh 50
+source scripts/ralph/ralph.sh --tool amp 50
+```
 
 ## What's Included
 
@@ -48,54 +84,6 @@ tasks/                      # PRDs live here
 tests/
   regression/               # Regression tests from bugs found during the project
 ```
-
-## How It Works
-
-The initializer walks you through 5 phases. Phase 1 is the core initialization — it produces all the artifacts subsequent agents need. Phases 2-5 handle planning and execution.
-
-### The 5 Phases
-
-1. **Spec (Initialization)** — Discovery, research, approach selection, PRD, backpressure design, tooling setup
-2. **Beads** — Break the PRD into dependency-aware implementation beads (quartets: impl, review, pare-down, compound)
-3. **Implementation (Ralph Loop)** — Each iteration: fresh agent, one bead, commit, stop. Memory persists via git, CLAUDE.md, skills, and progress.txt
-4. **Holistic Review** — Cross-cutting review across all completed work
-5. **Final Compound** — Project-level learnings, regression suite review, Initializer updates
-
-### The Ralph Loop
-
-`ralph.sh` runs a loop where each iteration spawns a fresh agent that completes exactly one bead:
-
-```bash
-# Run with Claude Code (default)
-source scripts/ralph/ralph.sh
-
-# Run with Amp
-source scripts/ralph/ralph.sh --tool amp
-
-# Limit iterations
-source scripts/ralph/ralph.sh 50
-source scripts/ralph/ralph.sh --tool amp 50
-```
-
-Features:
-- **Confidence routing** — HIGH confidence + green gate = auto-land. MEDIUM/LOW pause for review.
-- **Structured exit states** — `BLOCKED` auto-files blockers, `REWORK_REQUIRED` re-opens prerequisite beads. Both unclaim and proceed.
-- **Retry tracking** — 3 failures on the same bead triggers automatic escalation.
-- **Progress compaction** — Archives old entries to keep context windows clean.
-- **Rate limit detection** — Exits gracefully on API limits.
-- **Commit format validation** — commit-msg hook enforces `<type>: [ID] - <title>` convention.
-- **Review write protection** — Pre-commit hook blocks source changes during review beads.
-
-### Dependency Hallucination Detection
-
-The kickoff prompt mandates validating all new dependencies against their package registries. This prevents installing AI-hallucinated packages that don't exist or are typosquat targets.
-
-To enable:
-1. Install: `pip install dep-hallucinator` (or equivalent for your ecosystem)
-2. Add to your verification gate in `CLAUDE.md`
-3. Uncomment the dep-hallucinator section in `scripts/hooks/install.sh` and re-run it
-
-If `dep-hallucinator` is unavailable for your ecosystem, substitute with manual registry checks (`pip index versions <pkg>`, `npm view <pkg>`, etc.).
 
 ## Configuration
 

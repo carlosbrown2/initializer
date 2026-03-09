@@ -35,7 +35,12 @@ if git diff --cached --name-only | grep -q "^CLAUDE.md$"; then
   line_count=$(git show :CLAUDE.md 2>/dev/null | wc -l | tr -d ' ')
   if [ "$line_count" -gt "$CLAUDE_MD_MAX_LINES" ]; then
     echo "BLOCKED: CLAUDE.md has $line_count lines (max $CLAUDE_MD_MAX_LINES)."
-    echo "  Move domain-specific knowledge to docs/skills/ instead."
+    echo ""
+    echo "  How to fix:"
+    echo "    1. Identify domain-specific content (conventions, pitfalls, examples for a specific area)"
+    echo "    2. Move it to docs/skills/<domain>.md (see existing skill files for format)"
+    echo "    3. Keep only cross-cutting rules, invariants, and architecture decisions in CLAUDE.md"
+    echo "    4. Reference the skill file from CLAUDE.md if needed: 'See docs/skills/<domain>.md'"
     exit 1
   fi
 fi
@@ -67,8 +72,14 @@ if [ -f "$BEAD_TYPE_FILE" ]; then
     NON_REVIEW_FILES=$(git diff --cached --name-only | grep -v "^docs/reviews/" || true)
     if [ -n "$NON_REVIEW_FILES" ]; then
       echo "BLOCKED: Review beads are read-only — only docs/reviews/ files may be modified."
+      echo ""
       echo "  Rejected files:"
       echo "$NON_REVIEW_FILES" | sed 's/^/    /'
+      echo ""
+      echo "  How to fix:"
+      echo "    - Write all findings to docs/reviews/<story-id>.md instead of modifying source"
+      echo "    - If a fix is needed, note it as a P1 finding — it will be addressed in the pare-down bead"
+      echo "    - To override (emergency only): rm .current-bead-type"
       exit 1
     fi
   fi
@@ -121,9 +132,15 @@ fi
 #   or:   <type>: <description>  (for non-bead commits)
 if ! echo "$MSG" | head -1 | grep -qE "^(feat|review|refactor|docs|fix|chore|test): "; then
   echo "BLOCKED: Commit message must start with a valid type prefix."
-  echo "  Allowed: feat|review|refactor|docs|fix|chore|test"
+  echo ""
   echo "  Format:  <type>: [Story ID] - <title>"
+  echo "  Allowed: feat | review | refactor | docs | fix | chore | test"
   echo "  Got:     $(echo "$MSG" | head -1)"
+  echo ""
+  echo "  Examples:"
+  echo "    feat: [story-abc123] - Add user authentication"
+  echo "    review: [story-abc123] - Review user authentication"
+  echo "    fix: [story-abc123] - Fix login redirect loop"
   exit 1
 fi
 
