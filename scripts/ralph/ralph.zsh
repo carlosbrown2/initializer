@@ -20,10 +20,15 @@ command -v bd >/dev/null 2>&1 || {
   echo "  Then run: bd init"
   exit 1
 }
+command -v jq >/dev/null 2>&1 || {
+  echo "Error: 'jq' is not installed."
+  echo "  Install: brew install jq"
+  exit 1
+}
 
 # Parse arguments
 TOOL="claude"  # Default to claude
-MAX_ITERATIONS=30
+MAX_ITERATIONS=60
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -148,6 +153,12 @@ should_auto_land() {
 echo "Starting Ralph - Tool: $TOOL - Max iterations: $MAX_ITERATIONS"
 RALPH_EXIT_CODE=""
 
+# Scope logs to this run so they don't overwrite previous invocations
+RUN_ID=$(date +%Y%m%d-%H%M%S)
+ITER_LOG_DIR="$SCRIPT_DIR/logs/run-$RUN_ID"
+mkdir -p "$ITER_LOG_DIR"
+echo "Log directory: $ITER_LOG_DIR"
+
 for i in $(seq 1 $MAX_ITERATIONS); do
   echo ""
   echo "==============================================================="
@@ -162,11 +173,12 @@ for i in $(seq 1 $MAX_ITERATIONS); do
   fi
 
   # --- Write retry state for the agent to read ---
-  # Detect current in-progress bead (if any)
-  CURRENT_BEAD=$(bd list --status=in_progress 2>/dev/null | grep -o '[a-z_]*-[a-z0-9]*-[a-z0-9]*' | head -1) || true
+  # Detect current in-progress bead (if any) — used for retry tracking only;
+  # authoritative CURRENT_BEAD is set after stale-bead cleanup below.
+  PRE_CLEANUP_BEAD=$(bd list --status=in_progress --json 2>/dev/null | jq -r '.[0].id // empty') || true
 
   # If we're tracking a failed bead and a different bead is now in progress, reset
-  if [[ -n "$LAST_FAILED_BEAD" && -n "$CURRENT_BEAD" && "$CURRENT_BEAD" != "$LAST_FAILED_BEAD" ]]; then
+  if [[ -n "$LAST_FAILED_BEAD" && -n "$PRE_CLEANUP_BEAD" && "$PRE_CLEANUP_BEAD" != "$LAST_FAILED_BEAD" ]]; then
     FAIL_COUNT=0
     LAST_FAILED_BEAD=""
   fi
@@ -176,40 +188,86 @@ for i in $(seq 1 $MAX_ITERATIONS); do
 {"fail_count": $FAIL_COUNT, "bead_id": "${LAST_FAILED_BEAD:-}", "iteration": $i}
 RETRY_EOF
 
+  # --- Reconcile stale in-progress beads ---
+  # If any bead is in_progress but its commit already exists in git, close it
+  # automatically instead of wasting an agent iteration.
+  ALL_IN_PROGRESS=$(bd list --status=in_progress --json 2>/dev/null | jq -r '.[].id' || true)
+  for stale in $ALL_IN_PROGRESS; do
+    if git log --oneline -20 2>/dev/null | grep -q "$stale"; then
+      STALE_TITLE=$(bd show "$stale" 2>/dev/null | sed -n '2p' | sed 's/^[^·]*· //' | sed 's/  *\[.*//')
+      echo "Auto-closing stale bead: $stale — $STALE_TITLE"
+      echo "  (commit already exists in git but bead was not closed)"
+      bd close "$stale" 2>/dev/null || true
+      echo "[$(date -Iseconds)] iter=$i AUTO_CLOSE bead=$stale reason=commit_already_exists" >> "$CONFIDENCE_LOG"
+    fi
+  done
+
+  # Re-detect after cleanup
+  CURRENT_BEAD=$(bd list --status=in_progress --json 2>/dev/null | jq -r '.[0].id // empty') || true
+
   # --- Show upcoming work ---
   BEAD_ID=""
   BEAD_TITLE=""
+  BEAD_PHASE=""
   if [[ -n "$CURRENT_BEAD" ]]; then
     BEAD_ID="$CURRENT_BEAD"
-    BEAD_TITLE=$(bd show "$BEAD_ID" 2>/dev/null | sed -n '2p' | sed 's/^[^·]*· //' | sed 's/  *\[●.*//')
-    echo "Resuming: $BEAD_ID — $BEAD_TITLE"
+    BEAD_TITLE=$(bd show "$BEAD_ID" 2>/dev/null | sed -n '2p' | sed 's/^[^·]*· //' | sed 's/  *\[.*//')
+    BEAD_PHASE=$(bd label list "$BEAD_ID" 2>/dev/null | grep -o 'phase:[a-z-]*' | sed 's/phase://' | head -1) || true
+    echo "Resuming: $BEAD_ID [$BEAD_PHASE] — $BEAD_TITLE"
   else
-    BEAD_ID=$(bd ready 2>/dev/null | grep -o '[a-z_]*-[a-z0-9]*-[a-z0-9]*' | head -1) || true
+    BEAD_ID=$(bd ready --json 2>/dev/null | jq -r '[.[] | select(.issue_type == "task" or .issue_type == "bug" or .issue_type == "feature")][0].id // empty') || true
     if [[ -n "$BEAD_ID" ]]; then
-      BEAD_TITLE=$(bd show "$BEAD_ID" 2>/dev/null | sed -n '2p' | sed 's/^[^·]*· //' | sed 's/  *\[●.*//')
-      echo "Current bead: $BEAD_ID — $BEAD_TITLE"
+      BEAD_TITLE=$(bd show "$BEAD_ID" 2>/dev/null | sed -n '2p' | sed 's/^[^·]*· //' | sed 's/  *\[.*//')
+      BEAD_PHASE=$(bd label list "$BEAD_ID" 2>/dev/null | grep -o 'phase:[a-z-]*' | sed 's/phase://' | head -1) || true
+      echo "Current bead: $BEAD_ID [$BEAD_PHASE] — $BEAD_TITLE"
     else
       echo "No beads ready — agent will check and emit COMPLETE."
     fi
   fi
   echo "---------------------------------------------------------------"
 
+  # --- Timing ---
+  ITER_START=$(date +%s)
+
+  # --- Output persistence ---
+  ITER_LOG_FILE="$ITER_LOG_DIR/iter-$(printf '%03d' $i).log"
+
   # Run the selected tool with the ralph prompt
   if [[ "$TOOL" == "amp" ]]; then
-    OUTPUT=$(cat "$PROMPT_FILE" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+    OUTPUT=$(cat "$PROMPT_FILE" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr "$ITER_LOG_FILE") || true
   else
     # Claude Code: use --dangerously-skip-permissions for autonomous operation, --print for output
-    OUTPUT=$(claude --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
+    OUTPUT=$(claude --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee /dev/stderr "$ITER_LOG_FILE") || true
+  fi
+
+  ITER_END=$(date +%s)
+  ITER_DURATION=$((ITER_END - ITER_START))
+  echo "Iteration $i duration: ${ITER_DURATION}s (log: $ITER_LOG_FILE)"
+
+  # --- Extract gate failure summaries for diagnostics ---
+  GATE_FAILURES=""
+  # Capture pytest failures (anchored to pytest output format: "FAILED tests/...")
+  PYTEST_FAILS=$(grep -m 5 "^FAILED \|FAILED tests/" "$ITER_LOG_FILE" 2>/dev/null || true)
+  # Capture Lean errors (anchored to Lean error format: "error[...")
+  LEAN_ERRS=$(grep -m 5 "^error\[" "$ITER_LOG_FILE" 2>/dev/null || true)
+  # Capture mypy errors (anchored to mypy format: "path.py:line: error:")
+  MYPY_ERRS=$(grep -m 5 "\.py:[0-9]*: error:" "$ITER_LOG_FILE" 2>/dev/null || true)
+  GATE_FAILURES="${PYTEST_FAILS}${LEAN_ERRS}${MYPY_ERRS}"
+  if [[ -n "$GATE_FAILURES" ]]; then
+    echo "[$(date -Iseconds)] iter=$i GATE_FAILURES:" >> "$CONFIDENCE_LOG"
+    echo "$GATE_FAILURES" | head -10 >> "$CONFIDENCE_LOG"
   fi
 
   # Check for completion signal (all work done)
   if echo "$OUTPUT" | grep -q "<promise>COMPLETE</promise>"; then
+    echo "[$(date -Iseconds)] iter=$i COMPLETE bead=${BEAD_ID:-none} duration=${ITER_DURATION}s" >> "$CONFIDENCE_LOG"
     finish 0 "Ralph completed all tasks at iteration $i of $MAX_ITERATIONS."
     break
   fi
 
   # Check for rate limit signal
   if echo "$OUTPUT" | grep -qi "You've hit your limit\|you have hit your limit\|rate limit\|usage limit"; then
+    echo "[$(date -Iseconds)] iter=$i RATE_LIMITED bead=${BEAD_ID:-unknown} duration=${ITER_DURATION}s" >> "$CONFIDENCE_LOG"
     finish 2 "Ralph hit agent rate limit at iteration $i. Exiting gracefully."
     break
   fi
@@ -218,7 +276,7 @@ RETRY_EOF
   BEAD_DONE=false
 
   # Determine the current in-progress bead for signal handling
-  ACTIVE_BEAD=$(bd list --status=in_progress 2>/dev/null | grep -o '[a-z_]*-[a-z0-9]*-[a-z0-9]*' | head -1) || true
+  ACTIVE_BEAD=$(bd list --status=in_progress --json 2>/dev/null | jq -r '.[0].id // empty') || true
 
   if echo "$OUTPUT" | grep -q "<promise>BEAD_DONE</promise>"; then
     BEAD_DONE=true
@@ -226,6 +284,19 @@ RETRY_EOF
     LAST_FAILED_BEAD=""
     rm -f "$RETRY_STATE_FILE"
     echo "Bead completed successfully at iteration $i."
+
+    # --- Post-BEAD_DONE cleanup: ensure no beads are left in_progress ---
+    # The agent sometimes emits BEAD_DONE without calling `bd close`, or works a
+    # different bead than the one ralph detected. Sweep all in_progress beads and
+    # close any whose commits already landed.
+    STALE_BEADS=$(bd list --status=in_progress --json 2>/dev/null | jq -r '.[].id' || true)
+    for sb in $STALE_BEADS; do
+      if git log --oneline -20 2>/dev/null | grep -q "$sb"; then
+        echo "  Post-BEAD_DONE auto-close: $sb (commit exists but bead still in_progress)"
+        bd close "$sb" 2>/dev/null || true
+        echo "[$(date -Iseconds)] iter=$i AUTO_CLOSE bead=$sb reason=post_bead_done_sweep" >> "$CONFIDENCE_LOG"
+      fi
+    done
 
   elif echo "$OUTPUT" | grep -q "<promise>BLOCKED</promise>"; then
     # --- BLOCKED: agent hit an external/architectural blocker ---
@@ -258,7 +329,7 @@ RETRY_EOF
       bd update "$ACTIVE_BEAD" --status open 2>/dev/null || true
 
       # Find and re-open the prerequisite bead
-      PREREQ_BEAD=$(bd deps "$ACTIVE_BEAD" 2>/dev/null | grep -o '[a-z_]*-[a-z0-9]*-[a-z0-9]*' | head -1) || true
+      PREREQ_BEAD=$(bd dep list "$ACTIVE_BEAD" 2>/dev/null | grep -oE '[a-z][-a-z0-9]*-[a-z0-9]{2,}' | head -1) || true
       if [[ -n "$PREREQ_BEAD" ]]; then
         bd update "$PREREQ_BEAD" --status open 2>/dev/null || true
         echo "  Re-opened prerequisite $PREREQ_BEAD for rework."
@@ -273,6 +344,32 @@ RETRY_EOF
 
   else
     echo "WARNING: No exit signal detected at iteration $i. Agent may have stopped unexpectedly."
+
+    # --- Check if agent completed work despite missing signal (context exhaustion) ---
+    # Re-check if the bead was closed or committed before tracking as failure
+    if [[ -n "$ACTIVE_BEAD" ]]; then
+      BEAD_STATUS=$(bd show "$ACTIVE_BEAD" 2>/dev/null | grep -o 'CLOSED\|OPEN\|IN_PROGRESS' | head -1) || true
+      if [[ "$BEAD_STATUS" == "CLOSED" ]]; then
+        echo "  Bead $ACTIVE_BEAD was closed despite missing signal (likely context exhaustion)."
+        echo "[$(date -Iseconds)] iter=$i bead=$ACTIVE_BEAD IMPLICIT_DONE reason=bead_closed_no_signal duration=${ITER_DURATION}s" >> "$CONFIDENCE_LOG"
+        FAIL_COUNT=0
+        LAST_FAILED_BEAD=""
+        rm -f "$RETRY_STATE_FILE"
+        echo "Iteration $i complete. Continuing..."
+        sleep 2
+        continue
+      elif git log --oneline -5 2>/dev/null | grep -q "$ACTIVE_BEAD"; then
+        echo "  Commit for $ACTIVE_BEAD found in git despite missing signal. Auto-closing."
+        bd close "$ACTIVE_BEAD" 2>/dev/null || true
+        echo "[$(date -Iseconds)] iter=$i bead=$ACTIVE_BEAD IMPLICIT_DONE reason=commit_found_no_signal duration=${ITER_DURATION}s" >> "$CONFIDENCE_LOG"
+        FAIL_COUNT=0
+        LAST_FAILED_BEAD=""
+        rm -f "$RETRY_STATE_FILE"
+        echo "Iteration $i complete. Continuing..."
+        sleep 2
+        continue
+      fi
+    fi
 
     # --- Retry tracking ---
     FAILED_BEAD="$ACTIVE_BEAD"
@@ -311,22 +408,15 @@ RETRY_EOF
     fi
   fi
 
-  # --- Gate result extraction ---
-  GATE_RESULT="skipped"
-  if echo "$OUTPUT" | grep -q '<gate-result>PASS</gate-result>'; then
-    GATE_RESULT="PASS"
-  elif echo "$OUTPUT" | grep -q '<gate-result>FAIL</gate-result>'; then
-    GATE_RESULT="FAIL"
-  fi
-
   # --- Confidence routing ---
   CONFIDENCE=$(parse_confidence "$OUTPUT")
   if [[ -n "$CONFIDENCE" ]]; then
     POLICY=$(read_auto_land_policy)
     AUTO_LAND=$(should_auto_land "$CONFIDENCE" "$POLICY")
 
-    # Log every routing decision for auditability
-    echo "[$(date -Iseconds)] iter=$i bead=${ACTIVE_BEAD:-unknown} bead_done=$BEAD_DONE confidence=$CONFIDENCE policy=$POLICY auto_land=$AUTO_LAND gate_result=$GATE_RESULT" >> "$CONFIDENCE_LOG"
+    # Log every routing decision for auditability (prefer ACTIVE_BEAD which reflects what the agent actually worked on)
+    LOGGED_BEAD="${ACTIVE_BEAD:-${BEAD_ID:-unknown}}"
+    echo "[$(date -Iseconds)] iter=$i bead=$LOGGED_BEAD bead_done=$BEAD_DONE confidence=$CONFIDENCE policy=$POLICY auto_land=$AUTO_LAND duration=${ITER_DURATION}s" >> "$CONFIDENCE_LOG"
 
     if [[ "$AUTO_LAND" == "true" ]]; then
       echo "Auto-land: confidence=$CONFIDENCE, policy=$POLICY"
@@ -336,10 +426,11 @@ RETRY_EOF
       read -r
     fi
   else
-    echo "[$(date -Iseconds)] iter=$i bead=${ACTIVE_BEAD:-unknown} bead_done=$BEAD_DONE confidence=NONE (no signal detected) gate_result=$GATE_RESULT" >> "$CONFIDENCE_LOG"
+    LOGGED_BEAD="${ACTIVE_BEAD:-${BEAD_ID:-unknown}}"
+    echo "[$(date -Iseconds)] iter=$i bead=$LOGGED_BEAD bead_done=$BEAD_DONE confidence=NONE duration=${ITER_DURATION}s" >> "$CONFIDENCE_LOG"
   fi
 
-  echo "Iteration $i complete. Continuing..."
+  echo "Iteration $i complete (${ITER_DURATION}s). Continuing..."
   sleep 2
 done
 

@@ -5,26 +5,29 @@ You are an autonomous coding agent. Each iteration, you execute ONE bead (story)
 ## Step 1: Orient
 
 1. Read `scripts/ralph/patterns.md` — check **Codebase Patterns** before starting
-2. Run `bd prime` then `bd ready` to find the next unblocked story
-3. Run `bd show <id>` to read the full description and acceptance criteria
-4. Claim it: `bd update <id> --status in_progress`
+2. Check if a bead is already in_progress: `bd list --status=in_progress`
+   - If yes, resume that bead — do NOT claim a new one
+3. If no bead is in_progress, run `bd prime` then `bd ready` to find the next unblocked story
+4. Run `bd show <id>` to read the full description and acceptance criteria
+5. Claim it (if not already in_progress): `bd update <id> --status in_progress`
 
 ### Determine Bead Type
 
-Inspect the bead title for a type prefix. Branch accordingly:
+Check the bead's phase label and title to determine its type. Run `bd label list <id>` to see labels, or look for the phase in the title (e.g., "impl:", "review:", "compound:", "pare-down:").
 
-| Prefix | Bead Type | Description |
-|--------|-----------|-------------|
-| `[impl]` or none | **Implementation** | Build feature + tests (default) |
-| `[review]` | **Review** | Multi-pass code review → artifact |
-| `[pare]` | **Pare-down** | Simplify code from review findings |
-| `[compound]` | **Compound** | Learning loop → update docs/skills |
+| Label / Title keyword | Bead Type | Description |
+|----------------------|-----------|-------------|
+| `phase:impl` or "impl:" or none | **Implementation** | Build feature + tests (default) |
+| `phase:review` or "review:" | **Review** | Multi-pass code review → artifact |
+| `phase:pare-down` or "pare-down:" | **Pare-down** | Simplify code from review findings |
+| `phase:compound` or "compound:" | **Compound** | Learning loop → update docs/skills |
+| `phase:research` or "research:" | **Research** | Single-pass analysis → artifact (no code changes) |
 
-If no prefix is present, treat the bead as **Implementation** (the default).
+If no phase label or keyword is present, treat the bead as **Implementation** (the default).
 
 **After determining the bead type**, write it to `.current-bead-type` so pre-commit hooks can enforce constraints:
 ```bash
-echo "<type>" > .current-bead-type   # one of: impl, review, pare, compound
+echo "<type>" > .current-bead-type   # one of: impl, review, pare, compound, research
 ```
 This file is consumed by the review write-protection hook. Clean it up in Step 3 (Close).
 
@@ -46,6 +49,7 @@ If it contains `fail_count > 0` for the same bead you're working on, this is a *
    - Unclaim the bead: `bd update <id> --status open`
    - File a blocker: `bd create --title="BLOCKED: <bead-id> - <failure summary>" --type=bug --priority=1`
    - Write escalation notes to `scripts/ralph/archive.txt`
+   - Emit `<confidence level="LOW">Escalated after 3 failed attempts: <failure summary></confidence>`
    - Emit `<promise>BEAD_DONE</promise>` (tells ralph.sh to move on)
    - Stop immediately — do NOT attempt further fixes
 
@@ -85,6 +89,20 @@ Simplify code based on findings from a prior review artifact.
 4. After all changes, run quality gate — ALL tests must pass
 5. Commit: `git add <files> && git commit -m "refactor: [Story ID] - [Story Title]"`
 
+### Research Beads `[research]`
+
+Single-pass analysis producing a written artifact. These are pure analysis — no code changes.
+
+1. Read the bead description carefully — it specifies the research question and scope
+2. **Check dependencies:** Run `bd show <id>` and look at the DEPENDS ON section. For each closed dependency, read its artifact at `docs/reviews/<dep-id>.md`. These contain findings from prior research beads that should inform your analysis.
+3. Read all relevant project files referenced in the description (research plan, Lean source, skills docs, etc.)
+4. Perform the analysis specified in the bead description
+5. Write the analysis artifact to `docs/reviews/<story-id>.md` (same location as review artifacts)
+6. The artifact should contain: the question addressed, methodology, findings, and a clear recommendation or conclusion
+7. Do NOT modify source code — research beads are read-only analysis
+8. Run quality gate — confirm no accidental changes broke tests
+9. Commit: `git add docs/reviews/<story-id>.md && git commit -m "research: [Story ID] - [Story Title]"`
+
 ### Compound Beads `[compound]`
 
 Learning feedback loop — extract lessons from a review+pare cycle into durable project knowledge.
@@ -105,16 +123,9 @@ Learning feedback loop — extract lessons from a review+pare cycle into durable
 
 1. Close the issue: `bd close <id>`
 2. Remove the bead type marker: `rm -f .current-bead-type`
-3. Append progress to `scripts/ralph/archive.txt` (format below)
-4. Emit a verification gate result:
-
-```
-<gate-result>PASS|FAIL</gate-result>
-```
-
-Emit `PASS` if the verification gate (from CLAUDE.md) succeeded, `FAIL` if it did not. This is logged for post-mortem analysis.
-
-5. Emit a confidence signal for the completed bead:
+3. Run `bd sync --flush-only` to persist bead state
+4. Append progress to `scripts/ralph/archive.txt` (format below)
+5. Emit a confidence signal **immediately before** `<promise>BEAD_DONE</promise>`. Both are **mandatory** — never emit BEAD_DONE without a confidence signal:
 
 ```
 <confidence level="HIGH|MEDIUM|LOW">One-line rationale</confidence>
@@ -129,7 +140,7 @@ Guidance:
 
 You are DONE for this iteration. Do NOT check for more stories. Do NOT start another story.
 
-1. Emit the appropriate exit signal (see below)
+1. Emit the confidence signal then the exit signal (see below). **Every `BEAD_DONE` must be preceded by a `<confidence>` tag.**
 2. If you emitted `BEAD_DONE`, run `bd ready` ONLY to check if all stories are finished.
    - If no more stories remain, ALSO reply with: `<promise>COMPLETE</promise>`
 3. Output your progress report and stop immediately. The ralph loop will invoke you again for the next story.

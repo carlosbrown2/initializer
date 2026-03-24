@@ -21,7 +21,7 @@ ITERATIONS_THRESHOLD = 10
 KEEP_ENTRIES = 10
 
 
-def _parse_progress(content: str) -> tuple:
+def _parse_progress(content: str) -> tuple[list[str], list[str], str | None, list[list[str]]]:
     """Parse progress.txt into (patterns_section, header_lines, entries).
 
     Returns:
