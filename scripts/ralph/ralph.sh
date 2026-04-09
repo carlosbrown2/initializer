@@ -112,15 +112,18 @@ parse_confidence() {
   fi
 }
 
-# Read auto-land policy from CLAUDE.md ## Confidence Routing section
+# Read auto-land policy from CLAUDE.md ## Confidence Routing section.
+# Default is "all" — matches the README/CLAUDE.md template's stated default.
+# (If you want a stricter default, set `auto-land: high` or `auto-land: none`
+# under `## Confidence Routing` in CLAUDE.md.)
 read_auto_land_policy() {
   local claude_md="$PROJECT_ROOT/CLAUDE.md"
   if [[ -f "$claude_md" ]]; then
     local policy
     policy=$(grep -A1 "## Confidence Routing" "$claude_md" | grep "auto-land:" | sed 's/.*auto-land: *//')
-    echo "${policy:-high}"
+    echo "${policy:-all}"
   else
-    echo "high"
+    echo "all"
   fi
 }
 
@@ -139,8 +142,8 @@ should_auto_land() {
       echo "false"
       ;;
     *)
-      # Unknown policy — default to high-only
-      [[ "$confidence" == "HIGH" ]] && echo "true" || echo "false"
+      # Unknown policy — default to the documented default ("all")
+      echo "true"
       ;;
   esac
 }

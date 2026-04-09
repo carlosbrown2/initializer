@@ -1,181 +1,129 @@
-# Ralph Agent Instructions
+# Ralph Iteration Contract
 
-You are an autonomous coding agent. Each iteration, you execute ONE bead (story), then exit.
+You are an autonomous coding agent. Each iteration, you complete **exactly one bead** and stop. How you get there is your call. The contracts below define what must be true before you exit.
 
-## Step 1: Orient
+## Hard rules
 
-1. Read `scripts/ralph/patterns.md` — check **Codebase Patterns** before starting
-2. Check if a bead is already in_progress: `bd list --status=in_progress`
-   - If yes, resume that bead — do NOT claim a new one
-3. If no bead is in_progress, run `bd prime` then `bd ready` to find the next unblocked story
-4. Run `bd show <id>` to read the full description and acceptance criteria
-5. Claim it (if not already in_progress): `bd update <id> --status in_progress`
+- **One bead per iteration.** When the bead is closed, emit the exit signal and stop. Never start a second bead in the same session.
+- **Never bypass a hook.** If a hook is wrong, fix the hook in a separate bead — don't disable it.
+- **The verification gate is the merge contract.** A green gate is a merge license. A red gate is a stop signal. There is no third option.
+- **The two registers (`docs/failure-modes.md`, `docs/decision-register.md`) are append-only sources of truth.** Implementation beads update them; review beads adversarially try to break them; compound beads promote durable patterns out of them. Never delete a row except via a compound bead with explicit justification.
 
-### Determine Bead Type
+## Definition of done (every bead, every type)
 
-Check the bead's phase label and title to determine its type. Run `bd label list <id>` to see labels, or look for the phase in the title (e.g., "impl:", "review:", "compound:", "pare-down:").
+Before you emit `BEAD_DONE`, all of the following must be true:
 
-| Label / Title keyword | Bead Type | Description |
-|----------------------|-----------|-------------|
-| `phase:impl` or "impl:" or none | **Implementation** | Build feature + tests (default) |
-| `phase:review` or "review:" | **Review** | Multi-pass code review → artifact |
-| `phase:pare-down` or "pare-down:" | **Pare-down** | Simplify code from review findings |
-| `phase:compound` or "compound:" | **Compound** | Learning loop → update docs/skills |
-| `phase:research` or "research:" | **Research** | Single-pass analysis → artifact (no code changes) |
+1. The bead is closed in beads (`bd close <id>`).
+2. The verification gate (single command from `CLAUDE.md`) is green.
+3. You emitted `<gate-result>PASS</gate-result>` (or `FAIL` if the gate failed and you're escalating).
+4. `.current-bead-type` and `.current-bead-scope` (if it was set) have been removed.
+5. `scripts/ralph/archive.txt` has a new progress entry.
+6. You emitted a `<confidence>` signal immediately followed by `<promise>BEAD_DONE</promise>`.
 
-If no phase label or keyword is present, treat the bead as **Implementation** (the default).
+The bead-type-specific contracts below add further requirements per type. They do not replace these six.
 
-**After determining the bead type**, write it to `.current-bead-type` so pre-commit hooks can enforce constraints:
-```bash
-echo "<type>" > .current-bead-type   # one of: impl, review, pare, compound, research
-```
-This file is consumed by the review write-protection hook. Clean it up in Step 3 (Close).
+## Iteration outcome contract
 
-### Check for Retry State
+These are the states that must hold before you exit. Sequence the work however you like — but every state below must be true when you emit your exit signal. Use the bead-type contracts below to know what "the bead's work is complete" means for your specific type.
 
-After claiming a bead, check if `scripts/ralph/retry_state.json` exists.
-If it contains `fail_count > 0` for the same bead you're working on, this is a **retry**.
+- **A bead has been claimed or resumed.** If `bd ready` returns nothing, emit `<promise>COMPLETE</promise>` and stop instead.
+- **`.current-bead-type` exists** and contains exactly one of `impl|review|pare|compound|research`. The pre-commit gate is fail-closed: if you try to commit while a bead is in progress and this marker is missing or invalid, you will be blocked. (How you decide the type is your call — the bead's phase label, title prefix, or context.)
+- **For `impl`, `pare`, and `compound` beads, `.current-bead-scope` exists** and lists the in-scope file paths (one per line). The scope hook rejects commits that touch anything outside this list, except for infrastructure paths (the registers, the archive, the patterns file, the bead-marker files; plus `CLAUDE.md`, `docs/skills/`, and `tests/regression/` for compound beads).
+- **If this is a retry** (`scripts/ralph/retry_state.json` shows `fail_count > 0` for this bead), the prior attempt has been diagnosed in `scripts/ralph/archive.txt` and the new approach is *meaningfully different* from the old one. On the third attempt, the strategy is fundamentally different or you have escalated via `BLOCKED`.
+- **The bead's type-specific work is complete** (see the bead-type contracts below).
+- **The failure-mode register has been updated** for any new failure mode this bead introduced. New decision points (new places agent variance can enter that weren't in the register before) have been added to the decision register.
+- **The verification gate has been run** and its outcome reported as `<gate-result>PASS</gate-result>` or `<gate-result>FAIL</gate-result>`.
+- **The bead is closed in beads** and beads state is persisted.
+- **`scripts/ralph/archive.txt` has a new progress entry** describing what was done, register updates, and learnings. Reusable patterns are also in `scripts/ralph/patterns.md`. New bug classes the system wouldn't catch automatically are filed as follow-up beads or as failure-mode rows.
+- **The marker files are absent** (`.current-bead-type` and `.current-bead-scope` removed).
+- **A `<confidence>` signal has been emitted immediately before `<promise>BEAD_DONE</promise>`.** Both are required, in that order.
 
-**On retry (fail_count 1–2):**
-1. Review what was tried: run `git diff HEAD~1` and `git log -1 --oneline` to see the previous attempt
-2. Run the verification gate to capture the current failure output
-3. Write a diagnosis to `scripts/ralph/archive.txt`: what failed, why, what you'll try differently
-4. Attempt a **meaningfully different approach** — do NOT repeat the same fix
-5. If the error class is the same as the previous attempt (same test, same assertion), consider escalating early
+## Bead-type contracts
 
-**On 3rd attempt (fail_count = 2) — escalation required if gate fails:**
-1. Try a **fundamentally different strategy** (e.g., different algorithm, different test approach, or revert and rethink)
-2. If the quality gate still fails after this attempt:
-   - Unclaim the bead: `bd update <id> --status open`
-   - File a blocker: `bd create --title="BLOCKED: <bead-id> - <failure summary>" --type=bug --priority=1`
-   - Write escalation notes to `scripts/ralph/archive.txt`
-   - Emit `<confidence level="LOW">Escalated after 3 failed attempts: <failure summary></confidence>`
-   - Emit `<promise>BEAD_DONE</promise>` (tells ralph.sh to move on)
-   - Stop immediately — do NOT attempt further fixes
+Determine the type from the bead's phase label or title prefix (`bd label list <id>` or `impl:` / `review:` / `pare-down:` / `compound:` / `research:` keywords). If unmarked, treat as **implementation**. Write the type to `.current-bead-type` (one of: `impl`, `review`, `pare`, `compound`, `research`) so the review write-protection hook knows what to enforce.
 
----
+### Implementation `[impl]`
 
-## Step 2: Execute (by bead type)
+Done when **all** of:
+- Every acceptance criterion in the bead has at least one mechanical check (test, type, contract, proof, or hook).
+- Every new failure mode introduced by this code has a row in `docs/failure-modes.md` with Status = `covered` (or `proven-impossible` with a written argument).
+- Every new decision point introduced by this code (a new place agent variance can enter the project that wasn't covered before) has a row in `docs/decision-register.md` with Status = `bounded`, `agent-discretion`, or `escalation-only`.
+- The diff is within the bead's declared file scope (`.current-bead-scope`); the scope enforcement hook will reject anything outside.
+- Commit message: `feat: [bead-id] - <title>`.
 
-### Implementation Beads `[impl]`
+How to build the checks is your choice. If you want a menu of techniques, load `docs/skills/backpressure-catalog.md`. Pick the strongest available. Invent better when you can.
 
-Build the feature per acceptance criteria. Write tests for each criterion.
+### Review `[review]`
 
-1. Implement the story per its acceptance criteria (from `bd show`)
-2. Write tests covering each acceptance criterion
-3. Run quality gate (defined in CLAUDE.md) — ALL tests must pass
-4. Commit: `git add <files> && git commit -m "feat: [Story ID] - [Story Title]"`
+Done when **all** of:
+- A review artifact exists at `docs/reviews/<bead-id>.md` containing findings classified by severity (P1 = fix inline, P2 = file as new bead, P3 = log to archive.txt). Each finding cites a clause from `docs/skills/review-rubric.md` so the verdict is bounded by a checked-in rubric, not by the model's intuition.
+- You have **adversarially attempted to falsify** the failure-mode register: for each row touching modules in this story, ask whether you can construct an input or sequence that triggers the failure and slips past the listed check. Document attempts in the artifact.
+- You have **adversarially attempted to falsify** the decision register: for each row touching this story, ask whether you can find an agent action that fell inside this decision point but bypassed the listed bounding mechanism (e.g., a commit that should have been scope-blocked but wasn't, a pattern promoted without a model tag, a "done" claim not backed by the gate).
+- No source files were modified — review beads are read-only analysis. The pre-commit hook enforces this when `.current-bead-type=review`.
+- Commit message: `review: [bead-id] - <title>`.
 
-### Review Beads `[review]`
+If the review uncovers P1 issues that block the review from completing, emit `<promise>REWORK_REQUIRED</promise>` with a `<rework-reason>` instead of `BEAD_DONE`. ralph.sh will re-open the prerequisite bead.
 
-Perform a multi-pass code review of the target file(s) specified in the bead description.
+### Pare-down `[pare]`
 
-1. **Pass 1 — Structure**: Read target files. Note dead code, unclear naming, over-abstraction
-2. **Pass 2 — Correctness**: Check invariants from CLAUDE.md, edge cases, off-by-ones
-3. **Pass 3 — Simplification**: Identify code that can be removed, inlined, or merged
-4. Write a review artifact to `docs/reviews/<story-id>.md` with findings organized by pass
-5. Each finding should note: file, line range, category (dead-code/naming/invariant/simplify), severity (high/medium/low), and suggested fix
-6. Do NOT modify source code — review beads are read-only analysis
-7. Run quality gate — confirm no accidental changes broke tests
-8. Commit: `git add docs/reviews/<story-id>.md && git commit -m "review: [Story ID] - [Story Title]"`
+Done when **all** of:
+- You read the review artifact at `docs/reviews/<review-bead-id>.md`.
+- Each finding flagged for simplification has been addressed (or explicitly deferred with reason).
+- Line count went down or stayed flat. Functionality is unchanged.
+- The verification gate still passes.
+- A `## Pare-down Notes` section has been appended to the review artifact.
+- Commit message: `refactor: [bead-id] - <title>`.
 
-### Pare-down Beads `[pare]`
+### Compound `[compound]`
 
-Simplify code based on findings from a prior review artifact.
+Done when **all** of:
+- You read the full review arc (review artifact + pare-down notes + git diffs from the quartet's commits).
+- Durable patterns have been promoted to `CLAUDE.md` `## Discovered Patterns` (cross-cutting) or `docs/skills/<domain>.md` (domain-specific). Every promoted pattern carries a `model:` tag identifying the model that authored it (e.g., `model: claude-opus-4-6`); on model upgrade, tagged patterns are re-validated or retired. This bounds "model upgrade drift" in the decision register.
+- For every bug class the review uncovered, you asked: "would the system catch this automatically next time?" If no, you added a hook, test, contract, or register row. New regression tests live in `tests/regression/`.
+- The review artifact at `docs/reviews/<review-bead-id>.md` has been **deleted** — its knowledge is now embedded in durable docs.
+- Commit message: `docs: [bead-id] - <title>` (or `chore:` if no doc changes were needed).
 
-1. Read the review artifact referenced in the bead description (e.g., `docs/reviews/<review-id>.md`)
-2. Address findings by severity: high → medium → low
-3. For each finding: apply the simplification, verify tests still pass
-4. After all changes, run quality gate — ALL tests must pass
-5. Commit: `git add <files> && git commit -m "refactor: [Story ID] - [Story Title]"`
+### Research `[research]`
 
-### Research Beads `[research]`
+Done when **all** of:
+- A research artifact exists at `docs/reviews/<bead-id>.md` containing the question, methodology, findings, and a clear recommendation.
+- All closed dependencies of this bead have been read (their artifacts at `docs/reviews/<dep-id>.md`).
+- No source files were modified.
+- Commit message: `research: [bead-id] - <title>`.
 
-Single-pass analysis producing a written artifact. These are pure analysis — no code changes.
+## Confidence signal (mandatory)
 
-1. Read the bead description carefully — it specifies the research question and scope
-2. **Check dependencies:** Run `bd show <id>` and look at the DEPENDS ON section. For each closed dependency, read its artifact at `docs/reviews/<dep-id>.md`. These contain findings from prior research beads that should inform your analysis.
-3. Read all relevant project files referenced in the description (research plan, Lean source, skills docs, etc.)
-4. Perform the analysis specified in the bead description
-5. Write the analysis artifact to `docs/reviews/<story-id>.md` (same location as review artifacts)
-6. The artifact should contain: the question addressed, methodology, findings, and a clear recommendation or conclusion
-7. Do NOT modify source code — research beads are read-only analysis
-8. Run quality gate — confirm no accidental changes broke tests
-9. Commit: `git add docs/reviews/<story-id>.md && git commit -m "research: [Story ID] - [Story Title]"`
-
-### Compound Beads `[compound]`
-
-Learning feedback loop — extract lessons from a review+pare cycle into durable project knowledge.
-
-1. Read the review artifact referenced in the bead description
-2. Extract patterns, invariants, or conventions that should be permanent
-3. Update the appropriate target(s):
-   - `CLAUDE.md` — new invariants, do-not rules, or discovered patterns
-   - `docs/skills/*.md` — domain knowledge updates
-   - `scripts/ralph/patterns.md` — codebase patterns for future iterations
-4. Delete the review artifact (`docs/reviews/<review-id>.md`) — its knowledge is now embedded in durable docs
-5. Run quality gate — confirm no accidental changes broke tests
-6. Commit: `git add <files> && git commit -m "docs: [Story ID] - [Story Title]"`
-
----
-
-## Step 3: Close
-
-1. Close the issue: `bd close <id>`
-2. Remove the bead type marker: `rm -f .current-bead-type`
-3. Run `bd sync --flush-only` to persist bead state
-4. Append progress to `scripts/ralph/archive.txt` (format below)
-5. Emit a confidence signal **immediately before** `<promise>BEAD_DONE</promise>`. Both are **mandatory** — never emit BEAD_DONE without a confidence signal:
+Emit immediately before `<promise>BEAD_DONE</promise>`. Both are required — never emit `BEAD_DONE` without a confidence signal.
 
 ```
 <confidence level="HIGH|MEDIUM|LOW">One-line rationale</confidence>
 ```
 
-Guidance:
-- **HIGH** — All acceptance criteria met, tests pass, no ambiguity in implementation
-- **MEDIUM** — Criteria met but with minor uncertainty (e.g., edge case coverage, interpretation of spec)
-- **LOW** — Significant uncertainty remains (e.g., partial criteria, workaround applied, needs follow-up)
+- **HIGH** — All acceptance criteria met, gate green, registers updated, no ambiguity. Auto-land allowed under `auto-land: all` and `auto-land: high`.
+- **MEDIUM** — Criteria met but with minor uncertainty (edge case coverage, spec interpretation). Pauses for human review unless policy is `auto-land: all`.
+- **LOW** — Significant uncertainty (partial criteria, workaround applied, retry-after-failure). Always pauses for human review.
 
-## Step 4: Stop
+## Exit signals
 
-You are DONE for this iteration. Do NOT check for more stories. Do NOT start another story.
+Emit exactly **one** of these. ralph.sh routes on the signal.
 
-1. Emit the confidence signal then the exit signal (see below). **Every `BEAD_DONE` must be preceded by a `<confidence>` tag.**
-2. If you emitted `BEAD_DONE`, run `bd ready` ONLY to check if all stories are finished.
-   - If no more stories remain, ALSO reply with: `<promise>COMPLETE</promise>`
-3. Output your progress report and stop immediately. The ralph loop will invoke you again for the next story.
+| Signal | When to use | Effect |
+|--------|------------|--------|
+| `<promise>BEAD_DONE</promise>` | Bead completed. Definition of done holds. | Reset retry state, proceed to next iteration. |
+| `<promise>BLOCKED</promise>` followed by `<blocked-reason>...</blocked-reason>` | Architectural concern, missing dependency, contradictory requirements, or 3-fail escalation. | Auto-file a blocker bead, unclaim current bead, proceed. |
+| `<promise>REWORK_REQUIRED</promise>` followed by `<rework-reason>...</rework-reason>` | Prior bead's work is insufficient — current review/pare/compound cannot proceed. | Re-open the prerequisite bead, unclaim current bead, proceed. |
+| `<promise>COMPLETE</promise>` | `bd ready` returns no more work. | Exit the ralph loop. |
 
-**Exit signals — emit exactly ONE of these:**
-
-| Signal | When to use | What ralph.sh does |
-|--------|------------|-------------------|
-| `<promise>BEAD_DONE</promise>` | Bead completed successfully | Reset retry state, proceed to next iteration |
-| `<promise>BLOCKED</promise>` | Architectural concern, missing dependency, or external blocker prevents progress | Auto-file a blocker bead, unclaim current bead, proceed to next iteration |
-| `<promise>REWORK_REQUIRED</promise>` | Prior bead's work is insufficient — current bead (review/pare/compound) cannot proceed | Re-open the prerequisite bead, unclaim current bead, proceed to next iteration |
-| `<promise>COMPLETE</promise>` | `bd ready` returns no more work | Exit the ralph loop |
-
-**When to use BLOCKED:**
-- You discover an architectural issue that requires human decision-making
-- An external dependency or service is unavailable
-- The bead's requirements are contradictory or ambiguous and cannot be resolved from existing docs
-- Always include a reason: `<promise>BLOCKED</promise>` followed by `<blocked-reason>description of the blocker</blocked-reason>`
-
-**When to use REWORK_REQUIRED:**
-- A review bead finds critical issues (P1) in the implementation that must be fixed before review can complete
-- A pare-down bead finds the code is untestable or broken in ways the review didn't catch
-- Always include a reason: `<promise>REWORK_REQUIRED</promise>` followed by `<rework-reason>description of what needs fixing</rework-reason>`
-
----
-
-## Progress Report Format
+## Progress report format
 
 APPEND to `scripts/ralph/archive.txt` (never replace existing content):
 
 ```
-## [Date/Time] - [Story ID]
-- Bead type: [implementation|review|pare-down|compound]
+## [Date/Time] - [Bead ID]
+- Type: [impl|review|pare-down|compound|research]
 - What was done
 - Files changed
+- Register updates: [failure-modes rows added: N | decision rows added: N | none]
 - **Learnings for future iterations:**
   - Patterns discovered
   - Gotchas encountered
@@ -183,16 +131,8 @@ APPEND to `scripts/ralph/archive.txt` (never replace existing content):
 ---
 ```
 
-If you discover a **reusable pattern**, also add it to `scripts/ralph/patterns.md`.
+If you discover a reusable pattern, also add it to `scripts/ralph/patterns.md`.
 
----
+## Stop
 
-## Rules
-
-- ONE bead per iteration — after completing it, STOP. Do not continue to the next bead.
-- Commit frequently, keep all tests green
-- Reuse existing infrastructure — do NOT rewrite what's already in the codebase
-- Read patterns.md before starting
-- Review beads are READ-ONLY — do not modify source code
-- Pare-down beads require a prior review artifact — fail fast if missing
-- Compound beads DELETE the review artifact after extracting knowledge
+After emitting your exit signal, you are done for this iteration. Do not check for more work. Do not start another bead. ralph.sh will spawn a fresh agent for the next iteration.

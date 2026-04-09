@@ -1,467 +1,212 @@
 # Project Kickoff Prompt
 
-You are my engineering partner for this project. Follow this workflow to setup this project exactly, phase by phase. Do not skip ahead. Wait for my approval before moving to the next phase.
+You are my engineering partner. Your job is to set up this project so that every change made by every future agent session is **provably correct, exhaustively constrained, and falsifiable by mechanical check**. The contracts below define *what* must be true at every checkpoint. *How* you satisfy them is your call — choose the strongest available technique, invent better ones when you can, and never substitute a procedure for a proof.
+
+There are no required steps in this document. There are required outcomes. A phase is "done" when its outcome contract holds and I have approved it. Ask for what you need.
 
 ---
 
-## Phase 1: Spec
+## The two registers
 
-### 1a. Discovery
-Grill me with questions before writing anything. Cover:
-- Requirements and constraints
-- Target users and use cases
-- Edge cases and failure modes
-- Which backpressure techniques from the catalog in Phase 1e apply to this project
-- Which domain-specific skills from `docs/skills/` (if any exist from prior projects) are relevant
+These are the mechanical backbone of the project. They are the only places where exhaustiveness is enforced — everything else flows from them.
 
-Do not stop asking until you have no remaining ambiguity.
+### 1. `docs/failure-modes.md` — the failure-mode register
 
-### 1b. Research
-Before proposing an approach, research three things and present your findings:
-1. **Codebase patterns** — What already exists? What conventions must we follow?
-2. **External docs & best practices** — Framework docs, library APIs, known pitfalls
-3. **Edge cases & failure modes** — What breaks under load, bad input, network failure, partial state?
+A live table. Every module, every function, every data flow that can fail must appear here, paired with a mechanical check that catches the failure before merge.
 
-If the domain warrants it, produce a standalone reference document in `docs/` (e.g., literature review, prior art survey). This persists across sessions and keeps domain knowledge out of conversation context.
-
-**Codebase search strategy:** Use the right tool for the query type:
-- **Exact matches** (function names, imports, error strings, config keys): `grep`, `ripgrep`, AST navigation
-- **Semantic similarity** (find code that does something similar, find related patterns, "how do we handle X"): semantic code search via the project's vector index (see Phase 1f setup)
-- When unsure, start with grep. Escalate to semantic search when grep returns too many irrelevant results or when the query is conceptual rather than lexical.
-
-**Large codebases (100K+ lines):** Evaluate tools that reduce navigation overhead — grep and AST navigation don't scale well when naming is inconsistent or the query is conceptual. Options:
-- **Semantic MCP tools** (e.g., [Context+](https://github.com/ForLoopCodes/contextplus)) — embedding-based code search, blast radius analysis, and spectral clustering. Good for "find similar" and conceptual queries.
-- **Context compilation via RLM** (e.g., [rlm_repl](https://github.com/fullstackwebdev/rlm_repl)) — loads the full repo into a REPL workspace (not into tokens), then programmatically traverses, slices, and searches it to build a minimal context pack for the current task. Treats tokens as compute rather than storage — the model receives a pre-compiled summary instead of raw source trees. Useful when the repo is too large for even semantic search to keep context clean.
-
-These add little value for small repos where grep suffices, but at scale they prevent context windows from filling with irrelevant code.
-
-### 1c. Approach Selection
-Present the top approaches with tradeoffs. I will pick one. Do not proceed until I confirm.
-
-### 1d. Write the PRD
-Formalize the approved approach into a PRD in `tasks/`. The PRD is the single source of truth for what we're building. It must include:
-- User stories with acceptance criteria (checkboxes)
-- A dependency DAG between user stories
-- Technology choices with explicit rationale
-- A config schema (if applicable)
-- All open questions resolved — no TBDs survive this phase
-
-Iterate on the PRD with me until all decisions are locked. Every downstream artifact (beads, code, tests) traces back to the PRD.
-
-### 1e. Backpressure & Verification Design
-Write a standalone backpressure document (`docs/backpressure.md`) that describes how the system prevents bad data or state from propagating. This is not a section in the PRD — it's a first-class design artifact.
-
-Start from the **backpressure catalog** below. For each category, determine which techniques apply to this project based on the codebase, domain, and risk profile. Not every project needs every technique — select the ones that catch real failure modes for this specific system. Document your selections and rationale.
-
-#### Backpressure Catalog
-
-**Verification & correctness** — catches bugs before they reach production:
-
-| Technique | What it catches | When to consider |
-|-----------|----------------|-----------------|
-| **Static typing** (e.g., mypy --strict, tsc --strict) | Type mismatches, missing annotations, wrong signatures | Always — baseline for any typed language |
-| **Unit tests** | Logic errors, regressions, data corruption | Always |
-| **Property-based tests** (e.g., Hypothesis, fast-check) | Edge cases no one thought to write tests for; mathematical invariant violations | When code has mathematical invariants, parsers, serialization round-trips, or complex input spaces |
-| **Formal verification / SMT** (e.g., Z3, Dafny) | Proves properties hold for ALL inputs, not just sampled ones | When correctness is non-negotiable for specific formulas or mappings (e.g., bounds proofs, injectivity) |
-| **Fuzz testing** (e.g., AFL, cargo-fuzz) | Crashes, hangs, and undefined behavior on malformed input | When code processes untrusted or complex input formats |
-| **Integration tests** | Failures at component boundaries, API contract violations | When multiple services or modules interact |
-| **Schema validation** (e.g., pydantic, JSON Schema, protobuf) | Malformed data crossing boundaries, schema drift between stages | When data flows between stages, services, or systems |
-| **Design by contract** (e.g., deal, icontract, dpcontracts) | Pre/postcondition violations, invariant breakage on every call | When functions have non-obvious requirements or guarantees that types alone can't express |
-| **Snapshot / golden tests** | Silent regressions in output format, numerical drift | When outputs must be deterministic and stable across changes |
-| **Distributional / statistical checks** | Subtle corruption that produces plausible but meaningless statistical results | When code produces probabilistic outputs, p-values, or statistical claims |
-| **Static analysis beyond types** (e.g., Bandit, Semgrep, CodeQL, pylint, SonarQube) | Security anti-patterns (hardcoded secrets, injection vectors, unsafe deserialization), excessive complexity, dead code, supply chain vulnerabilities | Always — types catch structural issues; static analysis catches semantic anti-patterns types can't express |
-| **Dependency vulnerability scanning** (e.g., pip-audit, npm audit, Dependabot, Snyk) | Known CVEs in transitive dependencies, outdated packages with security patches | Always — your code may be correct but your dependencies aren't |
-| **Dependency hallucination detection** (e.g., dep-hallucinator, manual registry checks) | Packages recommended by AI that don't exist or are typosquat/slopsquat targets | Always — runs in every verification gate pass. See Standing Rules for details |
-| **Mutation testing** (e.g., mutmut, cosmic-ray for Python; Stryker for JS/TS) | Weak test suites that pass but don't actually catch bugs; tests that assert nothing meaningful | When you need confidence that your test suite is effective, not just green |
-| **Browser/E2E automation** (e.g., Puppeteer MCP, Playwright, Cypress) | Visual regressions, broken user flows, client-server integration failures | When the project has a UI — agents can verify features the way a human would, catching issues unit tests miss |
-
-**Concurrency & data race prevention** — catches bugs from parallelism and shared state. These are among the hardest bugs to reproduce and easiest to miss:
-
-| Technique | What it catches | When to consider |
-|-----------|----------------|-----------------|
-| **Race detection** (e.g., Go race detector, ThreadSanitizer, `PYTHONHASHSEED` randomization) | Data races, non-deterministic behavior from unsynchronized shared state | When code uses threads, async, multiprocessing, or shared mutable state |
-| **Deadlock detection** (e.g., lock-order analysis, timeout-based acquisition) | Circular lock dependencies, indefinite hangs under contention | When code acquires multiple locks or coordinates between threads |
-| **Atomicity guarantees** (e.g., database transactions, file locking, compare-and-swap) | Partial updates visible to concurrent readers, torn writes, lost updates | When multiple writers can modify the same resource, or readers must see consistent state |
-| **Deterministic concurrency testing** (e.g., Loom for Rust, systematic schedule exploration) | Bugs that appear only under specific thread interleavings | When correctness depends on ordering of concurrent operations |
-
-**Runtime & operational** — catches failures in running systems. These apply primarily to service-oriented architectures; most batch/pipeline projects need only timeouts and idempotency.
-
-| Technique | What it catches | When to consider |
-|-----------|----------------|-----------------|
-| **Rate limiting** | Resource exhaustion from excessive requests | When exposing APIs or processing external input |
-| **Circuit breakers** | Cascading failures from downstream dependency outages | When calling external services that can fail |
-| **Retries with backoff** | Transient failures (network blips, temporary unavailability) | When operations can fail transiently and are idempotent |
-| **Timeouts** | Hung connections, slow dependencies blocking progress | When calling any external service or running unbounded operations |
-| **Queue depth limits** | Memory exhaustion from unbounded queues, producer-consumer imbalance | When using async queues or message brokers |
-| **Backoff strategies** | Thundering herd after recovery, retry storms | When many clients retry simultaneously |
-| **Idempotency** | Duplicate processing from retries, at-least-once delivery | When operations have side effects and may be retried |
-| **Health checks / liveness probes** | Silent process death, zombie services | When running long-lived services |
-| **Graceful degradation** | Total outage when a non-critical subsystem fails | When some features are optional and the system should partially function without them |
-
-#### Pattern sketches for less common techniques
-
-Most agents know how to write unit tests. These sketches show the *shape* of less familiar techniques so you can recognize where they fit and write a project-specific version in `docs/backpressure.md`.
-
-**Property-based test (Hypothesis)** — proves invariants hold across thousands of random inputs:
-```python
-from hypothesis import given, strategies as st
-
-@given(st.binary(min_size=1), st.binary(min_size=1))
-def test_ncd_symmetric(a: bytes, b: bytes) -> None:
-    """NCD(a,b) == NCD(b,a) for all inputs."""
-    assert ncd(a, b) == pytest.approx(ncd(b, a))
-
-@given(st.lists(st.floats(min_value=0, max_value=1), min_size=2).filter(lambda x: sum(x) > 0))
-def test_normalize_sums_to_one(weights: list[float]) -> None:
-    """Normalization always produces a valid distribution."""
-    dist = normalize(weights)
-    assert all(p >= 0 for p in dist)
-    assert sum(dist) == pytest.approx(1.0)
 ```
-Use when: code has mathematical invariants (symmetry, bounds, idempotency), serialization round-trips, or parsers. Hypothesis finds the edge cases you wouldn't write by hand.
-
-**SMT proof — negation pattern (Z3)** — proves a property holds for ALL inputs by showing no counterexample exists:
-```python
-from z3 import Reals, Solver, And, Not, unsat
-
-def test_formula_bounded() -> None:
-    """Prove output is in [0, 1] for all valid inputs."""
-    x, y, z = Reals("x y z")
-    precondition = And(x > 0, y > 0, z > 0, z <= x + y)
-    result = (z - min(x, y)) / max(x, y)
-    s = Solver()
-    s.add(And(precondition, Not(And(result >= 0, result <= 1))))
-    assert s.check() == unsat  # no inputs violate the bound
+| Module / function   | Failure mode               | Category     | Check (file:test)                          | Status  |
+|---------------------|----------------------------|--------------|--------------------------------------------|---------|
+| ingest.parse_row    | malformed UTF-8            | input        | tests/test_ingest.py::test_invalid_utf8    | covered |
+| ingest.parse_row    | row larger than 1 MB       | resource     | tests/test_ingest.py::test_oversized_row   | covered |
+| ingest.write_batch  | crash mid-write            | atomicity    | tests/integration/test_atomic_write.py     | covered |
+| stats.p_value       | numerical underflow        | correctness  | tests/test_stats.py::test_pvalue_bounds    | covered |
+| stats.p_value       | non-monotone in sample size| correctness  | Z3 proof in proofs/pvalue_monotone.py      | covered |
 ```
-Use when: you need exhaustive proof for a specific formula or mapping (bounds, injectivity, ordering preservation). Scale with bounds on input sizes to keep solving tractable.
 
-**SMT — covering array generation (Z3)** — generates minimal test suites covering all pairwise (or t-wise) parameter interactions:
-```python
-from z3 import Int, Solver, Or, sat
-from itertools import combinations
+**Categories** (use the strongest one that fits): `correctness`, `concurrency`, `atomicity`, `input`, `resource`, `temporal`, `version`, `dependency`, `operational`, `security`.
 
-def generate_pairwise_tests(params: dict[str, list[int]]) -> list[dict[str, int]]:
-    """Find minimal test cases covering all 2-way parameter combos."""
-    names = list(params.keys())
-    uncovered = {(a, va, b, vb) for a, b in combinations(names, 2)
-                 for va in params[a] for vb in params[b]}
-    tests = []
-    while uncovered:
-        s = Solver()
-        zvars = {n: Int(n) for n in names}
-        for n, vals in params.items():
-            s.add(Or(*(zvars[n] == v for v in vals)))
-        assert s.check() == sat
-        row = {n: s.model()[zvars[n]].as_long() for n in names}
-        tests.append(row)
-        uncovered -= {(a, row[a], b, row[b]) for a, b in combinations(names, 2)}
-    return tests
+**Status values** (only one is acceptable at merge time):
+- `covered` — there is a mechanical check, and it runs in the verification gate.
+- `proven-impossible` — there is a written argument (1–3 sentences, in the row's notes) explaining why this failure mode cannot occur given the system's structure. "It won't happen in practice" is not acceptable; "the type system prevents this because…" is.
+- `out-of-scope` — only valid for failure modes the PRD explicitly excludes. The PRD section must be cited inline.
+
+**No row may be left blank, vague, or in `tested-manually` status.** If you cannot find a mechanical check for a row, you must either invent one, prove the failure mode impossible, or escalate.
+
+**The exhaustiveness contract**: before any new module is merged, you must write a *negative-space proof* in the register — a line that says "the failure modes for this module are exactly the rows above, and here is why no other class of failure exists." If you cannot make that argument, the module is not ready to merge.
+
+A pre-commit hook (see *Structural enforcement* below) parses this file and rejects commits where:
+- any row has Status not in `{covered, proven-impossible, out-of-scope}`
+- any row references a check file that does not exist
+
+### 2. `docs/decision-register.md` — the decision register
+
+A live table. Every place **agent variance** can enter the project — every decision the model makes that isn't fully determined by a checked-in artifact — must appear here, paired with the structural mechanism that bounds it.
+
+This is the register that addresses the LLM-nondeterminism problem head-on. Sampling, batching, and model drift make it impossible for two runs of the same project to produce byte-identical code. The contract is **not** "the agent always makes the same choice." The contract is: **every choice the agent makes either lands inside a falsifiable channel or is rejected by a hook/gate/test.** The agent's freedom is funneled through narrow, mechanically-checkable channels. Outside the channels, the structure rejects the output regardless of which sample produced it.
+
+Each row must be a single line — multi-line visual continuations are not parseable by the integrity hook. If a cell needs more text, just let the line wrap in your editor.
+
 ```
-Use when: testing configurable systems with many parameters where bugs stem from value combinations. Produces far fewer tests than exhaustive enumeration while guaranteeing interaction coverage.
-
-**SMT — model-based test data (Z3)** — generates concrete inputs satisfying complex constraints from a spec:
-```python
-from z3 import Int, Solver, And, sat, Optimize
-
-def generate_test_inputs_for_path(guards: list) -> dict | None:
-    """Solve path constraints to produce feasible test data."""
-    s = Optimize()
-    x, y = Int("x"), Int("y")
-    for guard in guards:  # e.g., [x > 0, y == x + 1, y < 100]
-        s.add(guard)
-    if s.check() == sat:
-        m = s.model()
-        return {"x": m[x].as_long(), "y": m[y].as_long()}
-    return None  # path infeasible — discard
+| Decision point            | Where it occurs           | Bounding mechanism                                                                | Enforcement                                                                       | Status           |
+|---------------------------|---------------------------|-----------------------------------------------------------------------------------|-----------------------------------------------------------------------------------|------------------|
+| Solution selection        | impl bead execution       | every acceptance criterion bound to a mechanical check                            | failure-mode register hook                                                        | bounded          |
+| Acceptance interpretation | every "is it done" call   | every PRD criterion expressible as test/type/proof                                | PRD review at Phase 1; re-validate on PRD edit                                    | ritual-bounded   |
+| Review verdict            | review beads              | severity rubric in docs/skills/review-rubric.md; each finding cites a clause      | review artifact validator hook                                                    | bounded          |
+| Pattern extraction        | compound beads            | every promoted pattern carries a `model:` tag and a retire-on-upgrade rule        | CLAUDE.md model-tag validator hook                                                | bounded          |
+| Decomposition             | Phase 2                   | bead schema: scope, deps, criteria, size, register DoD                            | beads CLI + human dep-graph review at Phase 2                                     | ritual-bounded   |
+| Tool / search choice      | execution                 | unconstrained — model picks                                                       | none (rationale: search strategy is exactly where we want model freedom)          | agent-discretion |
+| Model upgrade drift       | model swap                | every promoted pattern tagged with source model; retire unless re-validated       | upgrade ritual: re-run both registers under the new model before resuming         | ritual-bounded   |
+| Scope creep               | every commit              | `.current-bead-scope` declares allowed paths; infrastructure paths always allowed | scope enforcement hook                                                            | bounded          |
+| Artifact format           | review / research beads   | review artifacts cite the rubric and contain a severity clause                    | review artifact validator hook                                                    | bounded          |
+| Sampling variance         | every model invocation    | `--print` mode, single-shot, fresh context per bead                               | ralph.sh invocation; one-bead-per-iteration                                       | bounded          |
+| Confidence                | exit signal               | `<confidence>` tag with HIGH/MEDIUM/LOW                                           | ralph.sh parse_confidence + auto-land routing                                     | bounded          |
+| Verification truth        | every "done" claim        | one command from `CLAUDE.md`, not agent judgment                                  | `<gate-result>` tag presence enforced by ralph.sh; tag truth is agent self-report | ritual-bounded   |
+| Architectural choice      | new subsystem design      | escalate to human; agent does not decide alone                                    | `<promise>BLOCKED</promise>` with reason                                          | escalation-only  |
 ```
-Use when: deriving diverse test inputs from a state machine, protocol spec, or complex preconditions. Use `Optimize` with `minimize`/`maximize` to get boundary values automatically.
 
-**Mutation testing** — tests that test your tests:
-```python
-# Run: mutmut run --paths-to-mutate=src/mymodule.py --tests-dir=tests/
-#
-# mutmut introduces mutations like:
-#   - `x > 0`  →  `x >= 0`     (boundary)
-#   - `x + y`  →  `x - y`      (operator)
-#   - `return result` → `return None`  (return value)
-#   - `if cond:` → `if not cond:`      (negate)
-#
-# Each surviving mutant = a bug your tests wouldn't catch.
-# Target: < 10% surviving mutants for critical modules.
-#
-# Example CI gate:
-#   mutmut run --paths-to-mutate=src/critical.py
-#   mutmut results
-#   # Fail if survival rate > threshold
-```
-Use when: you need confidence that your test suite is effective. Green tests mean nothing if they don't fail on bugs. Especially valuable after writing tests for mathematical or financial code where off-by-one or wrong-operator bugs have real consequences.
+**Status values** (only these four are acceptable at merge time):
+- `bounded` — there is a structural mechanism (hook, gate, test, schema) that mechanically constrains the agent's choice space. The mechanism is named in the row.
+- `ritual-bounded` — the choice is bounded by a documented ritual or human step with a defined re-run cadence (e.g., "re-validate on PRD edit"). Weaker than `bounded`, but still a named, repeatable mechanism — not "we trust the model." The cadence must appear in the row's notes.
+- `agent-discretion` — explicitly unconstrained because we want the model's freedom (e.g., tool selection, search strategy). Must be a deliberate choice with a one-line rationale, not an oversight.
+- `escalation-only` — the decision is too high-stakes to leave to the agent; the agent must surface it via `<promise>BLOCKED</promise>` and let a human decide.
 
-**Concurrency safety check** — catches races and non-determinism from parallelism:
-```python
-import subprocess
-import os
+Statuses `tested-manually`, `we-trust-the-model`, `TODO`, or empty are not acceptable. Be honest about `ritual-bounded` rows: claiming `bounded` for a ritual is exactly the failure mode the register exists to prevent.
 
-def test_deterministic_under_hash_randomization() -> None:
-    """Run the same computation with different PYTHONHASHSEED values.
-    Non-deterministic dict/set iteration will produce different results."""
-    results = []
-    for seed in ["0", "42", "12345"]:
-        env = {**os.environ, "PYTHONHASHSEED": seed}
-        out = subprocess.check_output(
-            ["python", "-c", "from mymodule import compute; print(compute())"],
-            env=env,
-        )
-        results.append(out)
-    assert len(set(results)) == 1, f"Hash randomization caused different outputs: {results}"
+**The exhaustiveness contract**: there must be no decision point in this project that lacks a row in the register. If during execution the agent finds itself making a call that isn't covered by an existing row, it must add a new row (with a constraint and an enforcement mechanism) before closing the bead. The register grows over the project's lifetime as new decision points emerge.
 
-# For threaded code, use concurrent stress tests:
-from concurrent.futures import ThreadPoolExecutor
+**Baseline rows** that every project must have, populated in Phase 1:
+1. Solution selection
+2. Acceptance interpretation
+3. Sampling variance
+4. Verification truth
+5. Scope creep
 
-def test_concurrent_writes_atomic() -> None:
-    """Verify shared state isn't corrupted under concurrent access."""
-    counter = SharedCounter()  # your class under test
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(counter.increment) for _ in range(10_000)]
-        for f in futures:
-            f.result()
-    assert counter.value == 10_000, f"Lost updates: got {counter.value}"
-```
-Use when: code uses threads, multiprocessing, async, or iterates over dicts/sets where ordering matters. `PYTHONHASHSEED` randomization is the cheapest concurrency check — catches hidden ordering dependencies with zero code changes.
-
-**Distributional check** — catches statistical bugs that produce plausible but wrong results:
-```python
-def test_null_distribution_not_degenerate(null_values: list[float]) -> None:
-    """Null distribution must have variance — otherwise the metric ignores permutation."""
-    assert np.std(null_values) > 1e-8, "Null has zero variance; metric is insensitive"
-    first_half = np.mean(null_values[: len(null_values) // 2])
-    second_half = np.mean(null_values[len(null_values) // 2 :])
-    assert abs(first_half - second_half) < 3 * np.std(null_values) / np.sqrt(len(null_values))
-```
-Use when: code produces p-values, confidence intervals, or any statistical claim. These checks catch silent corruption that passes all other tests.
-
-The backpressure document must cover:
-- Which techniques from the catalog were selected and why
-- What class of bug each catches in this specific system
-- How validation flows through the system (which checks run where, what halts on failure)
-- How an autonomous agent self-corrects when a check fails
-- **Which techniques produce cross-cutting test artifacts** (test files that span multiple user stories and don't belong to any single story) — these must be called out explicitly so they get their own beads in Phase 2
-
-After completing the backpressure document, update the PRD to reference it. Both must agree.
-
-### 1f. Documentation & Tooling Setup
-Create these files at the project root if they don't exist:
-- `CLAUDE.md` — Single authoritative project rules file (auto-loaded by Claude Code). Contains core architecture decisions, code standards, verification layers, invariants, do-not rules, and a `## Discovered Patterns` section. Keep ≤ 200 lines. **Domain-specific knowledge belongs in `docs/skills/`, not here** — see skills structure below. Include a `## Confidence Routing` section with the auto-land policy for this project (default: `auto-land: all`).
-- `progress.txt` — Running log of decisions and iteration history. Include a `## Codebase Patterns` section at the top for cross-session knowledge transfer. Session-specific context goes here; durable patterns belong in `CLAUDE.md`. Subject to **reversible compaction** — see compaction rules below.
-- A human-readable `docs/user-guide.md` for end users (update as features land)
-
-#### Skills directory (`docs/skills/`)
-
-Domain-specific knowledge lives in `docs/skills/` as standalone markdown files, loaded by the agent **only when a bead touches that domain**. This keeps `CLAUDE.md` lean and context windows clean.
-
-Each skill file covers one domain (e.g., `docs/skills/database-migrations.md`, `docs/skills/frontend-components.md`, `docs/skills/api-auth.md`). Structure:
-- **When to load**: A one-line description of which beads/files trigger loading this skill
-- **Conventions**: Patterns, naming rules, file structure for this domain
-- **Pitfalls**: Known failure modes specific to this domain
-- **Examples**: Canonical code snippets the agent should follow
-
-During Phase 2 (bead creation), tag each bead with relevant skill files. During Phase 3, the agent's "Read context" step loads the tagged skill files alongside `CLAUDE.md`.
-
-Create skill files proactively during Phase 1 for any domain the PRD touches that has project-specific conventions. Additional skill files are created organically during compound beads when a pattern is too domain-specific for `CLAUDE.md` but too valuable to lose.
-
-#### Reversible compaction for `progress.txt`
-
-`progress.txt` grows monotonically during implementation. To prevent context rot:
-
-**Threshold trigger:** When `progress.txt` exceeds 500 lines, compaction runs automatically at the start of the next ralph.sh iteration (before the agent picks up a bead).
-
-**Scheduled trigger:** Every 10 ralph.sh iterations, compaction runs as periodic maintenance regardless of file size.
-
-**Compaction procedure:**
-1. **Extract durable learnings** — Any pattern or decision that generalizes goes to `CLAUDE.md` `## Discovered Patterns` or a skill file in `docs/skills/`. These survive compaction.
-2. **Reversible compaction** — Replace detailed session logs with pointers: `[Iterations 1-15: see git log main~15..main~1 and bd history]`. The full history remains recoverable via git and beads, but doesn't consume context.
-3. **Preserve recent context** — Keep the last 10 iterations' entries in full detail. Only compact entries older than that.
-4. **Keep the `## Codebase Patterns` section intact** — This section is never compacted; it's updated in place.
-
-The compaction itself is a maintenance step in `ralph.sh`, not a bead. It runs before the agent's Orient step.
-
-#### Semantic code search setup
-
-For projects where semantic search adds value (agent's judgment, but especially for codebases 50K+ lines or with inconsistent naming):
-
-1. Set up a local vector index using Chroma (Python projects) or pgvector (if PostgreSQL is already in the stack). Index the codebase at the function/class level using AST-aware chunking (Tree-sitter).
-2. Document the search interface in `CLAUDE.md` so agents know how to query it.
-3. Re-index after each implementation bead lands (add to `ralph.sh` post-commit step).
-
-This is optional infrastructure — the agent evaluates whether it's warranted during Phase 1b and proposes setup if so. Small repos where grep suffices should skip this.
-
-### 1g. Logging Design
-Before implementation, propose a logging strategy sufficient to diagnose issues in production. I must approve it before we build.
-
-### 1h. Structural Constraint Setup
-
-Set up pre-commit hooks that enforce hard constraints the verification gate alone cannot catch:
-
-1. **Scope enforcement** — Each bead description declares its in-scope files/directories (see Phase 2b). The pre-commit hook rejects commits that modify files outside the declared scope. This prevents agents from making "drive-by" changes to unrelated code.
-2. **Dependency hallucination check** — Run `dep-hallucinator` (or equivalent registry validation) against any changes to dependency manifests (requirements.txt, package.json, pyproject.toml, Cargo.toml, etc.). Reject commits that introduce packages not found in their respective registries or that match known typosquat patterns.
-3. **CLAUDE.md size guard** — Reject commits that push `CLAUDE.md` beyond the line limit (default: 200 lines). Forces the agent to offload domain knowledge to `docs/skills/` instead.
-4. **Commit message format validation** — A commit-msg hook enforces that all commit messages start with a valid type prefix (`feat`, `review`, `refactor`, `docs`, `fix`, `chore`, `test`). This structurally enforces the naming convention from `prompt.md`.
-5. **Review bead write protection** — When `.current-bead-type` contains `review`, the pre-commit hook rejects changes to any file outside `docs/reviews/`. The agent writes this marker when claiming a bead and removes it on close.
-
-These hooks are **hard enforcement** — they block the commit regardless of what the prompt says. The prompt also instructs agents to respect scope and validate dependencies (soft guidance), but the hooks are the backstop.
-
-Install hooks via a setup script created during this phase. Document them in `CLAUDE.md` so agents understand the constraints.
+A pre-commit hook (see *Structural enforcement*) parses this file and rejects commits where:
+- the file does not exist (after Phase 1)
+- any baseline row is missing
+- any row is multi-line, or has fewer than five columns
+- any row's last cell (the Status column) is not exactly one of `{bounded, ritual-bounded, agent-discretion, escalation-only}`
+- any path-shaped token in a Bounding mechanism or Enforcement column points to a file that does not exist on disk
 
 ---
 
-## Phase 2: Implementation Plan (Beads)
+## Outcome contracts
 
-Install [Beads](https://github.com/steveyegge/beads) (`brew install beads` or `npm install -g @beads/bd`) and initialize it in the project with `bd init` if not already done.
+A phase is done when its contract holds and I approve. Sequence the sub-work however you want.
 
-Break the approved PRD into **beads** — structured, dependency-aware issues tracked via the `bd` CLI. Do not use markdown plans or flat TODO lists. Beads is the single source of truth for all work.
+### Phase 1 — Spec
 
-### 2a. File Epics
-Create top-level epics for each major area of the PRD (typically one per user story):
-```
-bd create "Epic title" --type epic -p <priority>
-```
+Done when **all** of the following hold and I have approved each:
 
-### 2b. File Quartets Under Epics
-For each implementation issue, create a **quartet** — an implementation bead followed by a **triad** of three QA beads:
+- `tasks/<project>.prd.md` exists. It contains user stories with acceptance criteria, the dependency DAG, technology choices with rationale, every config decision, and zero TBDs. Every acceptance criterion is expressible as a mechanical check.
+- `docs/failure-modes.md` exists, populated with the failure modes enumerable from the PRD before any code exists.
+- `docs/decision-register.md` exists, populated with the five baseline rows plus any project-specific decision points the PRD reveals. Single-line rows only.
+- `docs/skills/review-rubric.md` has been refined for this project's domain — at least one project-specific clause has been added or one starter clause adapted, and the "starter rubric" disclaimer at the top has been replaced with a project-named header. The shipped starter alone does not satisfy this contract; an unedited starter means "Review verdict" cannot legitimately be `bounded` in the decision register.
+- `CLAUDE.md` is filled in: architecture decisions, code standards, the **single verification-gate command** that runs every check from the failure-mode register, invariants, and the confidence-routing policy.
+- `docs/user-guide.md` exists as a stub that will grow as features land.
+- The structural enforcement hooks have been installed via `./scripts/hooks/install.sh` and demonstrably reject the things they're meant to reject. ("Demonstrably" means: I've watched at least one intentionally-bad commit be blocked, not that the script ran without error.)
+- No open assumptions remain about requirements, edge cases, target users, or risk tolerance. The codebase, the relevant external docs, and known failure modes for the chosen tech stack have been investigated. Top approaches have been presented with tradeoffs and I have picked one.
 
-1. **Implementation** — Build the feature AND its backpressure tests. Backpressure is built during implementation, not bolted on during review. Before writing any new function, search the codebase for existing ones that do the same thing (use semantic search for "find similar" queries, grep for exact matches). Do not add defensive code for conditions the system's design makes structurally impossible. Prefer idiomatic language patterns over verbose equivalents. Priority matches the epic. **Declare in-scope files/directories** in the bead description — the pre-commit hook enforces this boundary. **Tag relevant skill files** from `docs/skills/` that the agent should load.
-2. **Review** — Multi-pass code review. Verify all applicable backpressure techniques from `docs/backpressure.md` have tests. A missing backpressure test is a **P1** — fix inline. File P2s as new beads, log P3s to `progress.txt`. **Write a structured review artifact** to `docs/reviews/<story>-review.md` with: findings by severity, patterns observed, verbose/dead code flagged for pare-down, and learnings for compound. This artifact is the primary information bridge to pare-down and compound.
-3. **Pare-down** — Simplify without removing functionality. **Read `docs/reviews/<story>-review.md`** to see what the review flagged as verbose or redundant. Remove dead code, collapse unnecessary abstractions, reduce line count. Append a `## Pare-down Notes` section to the review artifact with what was simplified and why.
-4. **Compound** — Learning feedback loop. **Read `docs/reviews/<story>-review.md`** (including pare-down notes) and the git diffs from the quartet's commits to see the full arc. Append patterns to `CLAUDE.md` `## Discovered Patterns` (if they generalize) or create/update a skill file in `docs/skills/` (if they're domain-specific). Ask: "Would the system catch this class of issue automatically next time?" If no, add a test, lint rule, or contract. If a new bug class is identified, add a test to `tests/regression/` to prevent recurrence. Delete the review artifact after extracting learnings — it has served its purpose.
+If you want a menu of techniques to draw from when populating the failure-mode register, load `docs/skills/backpressure-catalog.md`. It is a reference, not a curriculum. Use what fits, ignore the rest, invent better when you can.
 
-Chain each quartet with dependencies: `bd dep add <review> <impl>`, `bd dep add <pare-down> <review>`, `bd dep add <compound> <pare-down>`.
+### Phase 2 — Beads
 
-#### Quartet serialization
+Done when **all** of the following hold and I have approved the bead graph:
 
-Ask the user which execution model they prefer:
+- Every PRD acceptance criterion is covered by at least one bead.
+- Every bead has a declared file scope (the scope enforcement hook is on by default).
+- Every bead is small enough to finish in a single fresh agent context window.
+- The dependency graph has no cycles. `bd ready --json` returns a sensible starting set.
+- Every implementation bead has, as part of its definition-of-done, an update to the failure-mode register for the module it touches.
+- Every implementation bead that introduces a new decision point (a new place agent variance can enter) has, as part of its DoD, an update to the decision register.
+- Cross-cutting checks that span multiple stories (e.g., a single property-test file covering invariants from several modules) get their own bead with its own quartet.
 
-- **Strict** — Chain the next story's implementation to the previous story's compound. Maximizes learning transfer; choose when correctness matters more than speed.
-- **Parallel where independent** — Only chain quartets with a data or code dependency. Choose when delivery speed matters more.
+Each story decomposes into the **quartet**: `impl → review → pare-down → compound`. The four passes are kept structural — at worst they are redundant, at best they catch what a single-pass review would miss. Chain each quartet with `bd dep add`.
 
-#### Cross-cutting test beads
+- **Implementation** — Build the feature *and* its checks. The failure-mode register must be updated before this bead closes; the decision register must be updated if a new decision point was introduced. Declare the bead's in-scope files in `.current-bead-scope`; the scope enforcement hook rejects out-of-scope changes.
+- **Review** — Adversarial pass over the implementation. Try to make the registers' claims false. Cite the severity rubric (`docs/skills/review-rubric.md`) for every finding. Write findings to `docs/reviews/<story-id>.md`. P1 findings are fixed inline; P2s become new beads; P3s land in `archive.txt`.
+- **Pare-down** — Read the review artifact. Remove dead code, collapse redundant abstractions, cut line count without losing functionality. Append a `## Pare-down Notes` section to the review artifact.
+- **Compound** — Read the full arc (review artifact + pare-down notes + git diff). Promote durable patterns into `CLAUDE.md` `## Discovered Patterns` (cross-cutting) or `docs/skills/<domain>.md` (domain-specific). Every promoted pattern must carry a `model:` tag identifying which model authored it; this enables retire-on-upgrade. Ask: "would the system catch this class of issue automatically next time?" If no, add a hook, test, contract, or register row. Delete the review artifact.
 
-Some backpressure techniques produce test files spanning multiple user stories (e.g., a single SMT proof file, or a distributional checks file across stages). The backpressure document flags these in Phase 1e. Create a **dedicated bead** for each, depending on the implementations they test, with its own review triad.
+### Phase 3 — Implementation (Ralph loop)
 
-Each bead must be:
-- **Small enough** to complete in one agent context window
-- **Independently validatable** — a test passes, a type checks, a command returns expected output
+Done when every bead is closed and **all** of the following hold for every commit:
 
-### 2c. Review the Bead Graph
-Run `bd ready --json` to verify the dependency graph makes sense. Present the full bead graph to me. I will approve before implementation begins.
+- The verification gate is green.
+- The failure-mode register has been updated for any module the bead touched, with at least one new row per new failure mode and a negative-space proof if a new module was added.
+- The decision register has been updated if a new decision point emerged.
+- The commit's diff is within the bead's declared scope (enforced by the scope hook).
+- A confidence signal was emitted.
 
-### 2d. Refine
-Iterate on the beads up to 5 times — proofread, refine descriptions, tighten dependencies, ensure workers will have a smooth time implementing each issue. Stop when you can't meaningfully improve them further.
+The Ralph loop's hard rule still holds: **one bead per fresh agent session, then stop**. This is itself a decision-register entry: it bounds "context drift" by structurally preventing it. Memory persists through git, the registers, `CLAUDE.md`, `docs/skills/`, and `scripts/ralph/archive.txt` — not through conversation history.
 
----
+Beyond that hard rule, the per-iteration prompt should describe outcomes, not steps. The agent decides how to orient, how to search, how to validate. It must produce: a closed bead, a green gate, updated registers, and a confidence signal.
 
-## Phase 3: Implementation (Ralph Loop)
+**Confidence routing**: three tiers — `HIGH`, `MEDIUM`, `LOW`. `CLAUDE.md` declares the auto-land policy under `## Confidence Routing`: `auto-land: all` (auto-land any tier, default), `auto-land: high` (auto-land HIGH only), or `auto-land: none` (every bead requires human approval).
 
-Execute beads using the Ralph pattern: **each iteration is a fresh agent instance with clean context that completes exactly ONE bead and then stops.** An agent must never work on a second bead in the same session. Memory persists via git history, `CLAUDE.md`, `docs/skills/`, `progress.txt`, and the beads database.
+**Retry rule**: if the verification gate fails twice on the same bead with the same error class, the third attempt must use a fundamentally different strategy or escalate via `BLOCKED`. Encoded in `ralph.sh`, not in prose.
 
-### Setup
+### Phase 4 — Holistic review
 
-**Branching strategy:** All work commits to `main`. Each bead is a single atomic commit. If a bead produces a bad commit, `git revert` the commit and re-open the bead.
+Done when an **adversarial cross-cutting review** has tried to find a counterexample to every claim in both registers, across the full codebase.
 
-Create two artifacts before starting the loop:
+This phase is not a code-style review. It is a *prove-the-system-wrong* exercise:
+- For each row in the **failure-mode register**, ask: *can I construct an input or sequence that triggers this failure and slips past the listed check?*
+- For each row in the **decision register**, ask: *can I find an agent action that fell inside this decision point but bypassed the listed bounding mechanism?* (E.g., a commit that should have been scope-blocked but wasn't, a pattern promoted without a model tag, a "done" claim not backed by the gate.)
 
-**`scripts/ralph/prompt.md`** — Per-iteration instructions piped to each Claude Code instance. Branches on bead type (implementation, review, pare-down, compound). Must enforce the **one bead per iteration** rule: the agent completes one bead, emits a done signal (e.g., `<promise>BEAD_DONE</promise>`), and stops. A separate completion signal (e.g., `<promise>COMPLETE</promise>`) is emitted when `bd ready` returns no work.
+If yes to either, file a bead.
 
-The prompt must also instruct the agent to emit a **confidence signal** after completing the bead:
-```
-<confidence level="HIGH|MEDIUM|LOW">One-line rationale for the confidence level</confidence>
-```
+Findings get classified `P1` (fix before shipping), `P2` (file a bead), `P3` (note in `archive.txt`).
 
-**`scripts/ralph/ralph.sh`** — Shell script that loops: run `claude --dangerously-skip-permissions --print < prompt.md`, check for the completion signal, sleep briefly, repeat. Accept an optional max-iteration count to prevent runaway loops. Log iteration count and bead status on each pass.
+### Phase 5 — Final compound
 
-`ralph.sh` additional responsibilities:
-- **Compaction check:** Before each iteration, check if `progress.txt` exceeds 500 lines or if 10 iterations have passed since last compaction. If either, run the compaction procedure (see Phase 1f) before spawning the agent.
-- **Confidence routing:** After a bead completes, check the confidence level. If confidence is **HIGH** AND the verification gate passed: auto-land the commit without waiting for human approval, regardless of bead type. **MEDIUM** confidence pauses for human review. **LOW** always pauses. The review triad exists to catch implementation mistakes — requiring human approval before the triad can run defeats the purpose of the Ralph loop. Log all auto-land decisions for auditability.
-- **Exit signal routing:** Handle structured exit states beyond BEAD_DONE/COMPLETE. `BLOCKED` auto-files a blocker bead, unclaims the current bead, and proceeds. `REWORK_REQUIRED` re-opens the prerequisite bead and unclaims the current bead. Both reset retry tracking and log to the confidence log.
-- **Semantic index refresh:** After each implementation bead lands (if semantic search is set up), re-index the codebase.
+Done when **all** of the following hold:
 
-**Confidence routing override:** The default auto-land policy can be overridden per-project in `CLAUDE.md` under a `## Confidence Routing` section. Options:
-- `auto-land: all` (default — all bead types auto-land at HIGH confidence + green gate)
-- `auto-land: review, pare-down, compound` (more conservative — implementation beads always require human approval)
-- `auto-land: compound` (most conservative — only auto-land the lowest-risk bead type)
-- `auto-land: none` (fully manual — every bead requires human approval)
-
-### The Loop
-
-For each iteration, `prompt.md` instructs the agent to:
-
-1. **Orient** — Run `bd ready` to get the highest-priority unblocked bead. Claim it. If nothing ready, emit the completion signal and stop.
-2. **Read context** — Check `CLAUDE.md` `## Discovered Patterns`, `progress.txt` `## Codebase Patterns`, the bead description, referenced files, and **any skill files tagged on the bead** from `docs/skills/`. Do not load skill files that aren't tagged — keep context clean.
-3. **Execute** — Complete the bead according to its type. Use semantic search for "find similar" queries, grep for exact matches. Respect the declared file scope — the pre-commit hook will reject out-of-scope changes.
-4. **Validate** — Run the project's verification gate (defined as a single command in `CLAUDE.md`, e.g., `mypy --strict src/ scripts/ tests/ && pytest && dep-hallucinator check`). The gate always includes dep-hallucinator. Do NOT proceed on a red gate.
-5. **Land** — Commit (`feat: [bead-id] - [title]`), close the bead (`bd close <id>`), file any discovered bugs/debt as new beads. Emit the confidence signal.
-6. **Update shared knowledge** — Append patterns to `CLAUDE.md` (if they generalize) or the appropriate skill file in `docs/skills/` (if domain-specific). Log session context to `progress.txt` (date, bead-id, files changed, learnings). Run `bd sync --flush-only`.
-
-### Dynamic Re-decomposition
-
-If during execution an agent discovers a bead is significantly more complex than its description suggests, it may **dynamically split the bead** under these rules:
-
-- **≤ 3 sub-beads:** Auto-split. Create the sub-beads with proper dependencies, close the original bead as "decomposed," and pick up the first sub-bead in the same iteration. Each sub-bead gets its own quartet (implementation + review/pare-down/compound). Log the decomposition in `progress.txt`.
-- **> 3 sub-beads:** Escalate. Unclaim the bead, file a blocker bead describing the unexpected complexity, and emit `BEAD_DONE` to stop the iteration. The human reviews and approves the re-decomposition before work continues.
-
-The threshold of 3 can be overridden in `CLAUDE.md`.
-
-### Retry and escalation
-
-If the verification gate fails 3 times on the same bead, the agent must unclaim it and file a blocker bead describing the failure. This prevents an agent from burning iterations on a problem it can't solve.
-
-**Retry differentiation:** Each retry must be meaningfully different from the last. The agent must:
-1. Before retrying, review the git diff and test output from the failed attempt
-2. Write a one-line diagnosis of *why* it failed to `progress.txt`
-3. Attempt a *different approach* — not the same code with minor tweaks. If the same test fails with the same error class twice in a row, the third attempt must try a fundamentally different strategy or escalate immediately.
-
-### One Bead Per Iteration — Hard Rule
-Kill the agent after completing each bead and start a fresh one. The agent must **never** pick up a second bead in the same session. Short sessions = cheaper, better decisions, no context rot. `ralph.sh` enforces this by scanning for the `BEAD_DONE` signal and spawning a new agent for the next iteration.
+- Every rule that turned out to matter is enforced by a hook, a test, a type, or a gate. Anything still living only in prose has been either deleted (it didn't matter) or promoted to structure (it did).
+- Every bug class encountered during the project has a regression test in `tests/regression/`, wired into CI/pre-push.
+- Every decision point that emerged during the project has a row in the decision register with status `bounded` or a deliberate `agent-discretion` rationale.
+- `docs/skills/` has been pruned of stale entries and consolidated where overlapping.
+- `CLAUDE.md` has been pruned of any rule now enforced structurally — the constitution should shrink, not grow, as the system matures.
+- This kickoff prompt has been updated with anything the next project would benefit from. If a new technique earned its place, add it to `docs/skills/backpressure-catalog.md`. If a new class of decision point emerged, add it to the baseline rows in this prompt.
 
 ---
 
-## Phase 4: Holistic Review
+## Structural enforcement
 
-After all quartets are complete, run a **cross-cutting review** across the finished work. The per-story triads already caught story-level issues — this phase catches concerns that span stories.
+If a rule matters, it must be enforced mechanically. Prose is for context; gates are for safety. Install these in Phase 1 and never bypass them.
 
-Review dimensions (run in parallel where possible):
-- **Security** — Auth, injection, secrets exposure, input validation
-- **Performance** — N+1 queries, unnecessary allocations, missing caching, algorithmic complexity
-- **Architecture** — Coupling, cohesion, separation of concerns, dependency direction
-- **Simplicity** — Dead code, over-abstraction, unnecessary indirection across the full codebase
-- **Domain-specific** — Whatever concerns are unique to this project's domain
+**Pre-commit hooks** (install via `./scripts/hooks/install.sh`):
 
-Classify every finding:
-- **P1** — Must fix before shipping. Fix immediately.
-- **P2** — Should fix soon. File a bead for it: `bd create "P2: [finding]" -p 1`
-- **P3** — Nice to fix. Note it in `progress.txt`.
+1. **Bead type fail-closed gate** — when a bead is in progress (per `bd list --status=in_progress`), `.current-bead-type` must exist and hold one of `impl|review|pare|compound|research`. Closes the "forget to write the marker → no enforcement" bypass that would otherwise let scope enforcement and write protection silently no-op.
+2. **Scope enforcement** — rejects commits that touch files outside `.current-bead-scope`. `impl`/`pare`/`compound` beads MUST have a scope file present. Always-allowed infrastructure paths (the registers, the archive, the patterns file, the bead-marker files; plus `CLAUDE.md`, `docs/skills/`, and `tests/regression/` for compound beads) are exempt.
+3. **Failure-mode register integrity** — rejects commits where any row in `docs/failure-modes.md` has a last cell that isn't exactly `covered|proven-impossible|out-of-scope`, or where a referenced check file does not exist on disk.
+4. **Decision register integrity** — rejects commits where `docs/decision-register.md` is missing baseline rows, contains a multi-line/malformed row, has a row whose last cell isn't an acceptable Status, or names a bounding-mechanism file that does not exist.
+5. **Review/research bead write-protection** — when `.current-bead-type` is `review` or `research`, only files under `docs/reviews/` may change.
+6. **Review artifact validator** — when `.current-bead-type=review`, files staged in `docs/reviews/` must cite `docs/skills/review-rubric.md` and contain at least one severity clause matching `P[123].<clause-name>`.
+7. **CLAUDE.md model-tag validator** — every `### ` entry under `## Discovered Patterns` in `CLAUDE.md` must contain an anchored `model:` line so it can be retired or re-validated on model upgrade.
+8. **CLAUDE.md size guard** — rejects commits that push `CLAUDE.md` past the line limit (default 200). Domain knowledge belongs in `docs/skills/`, not in the constitution.
+9. **Commit-message format** — `feat|fix|refactor|review|compound|research|docs|chore|test: ...`.
 
----
+A tenth hook, **dependency hallucination check** (`dep-hallucinator` or equivalent on every manifest change), ships commented out in `install.sh` — uncomment after installing the tool of your choice.
 
-## Phase 5: Final Compound
-
-The per-story compound beads captured story-level learnings. This phase captures **project-level** learnings:
-
-1. **Capture** — What worked about the overall process? What didn't? What would you change for the next project?
-2. **Update** — Finalize `CLAUDE.md`. Remove rules now enforced by code (tests, linters, type system, CI gates, pre-commit hooks). Review `docs/skills/` for accuracy — prune stale skill files, consolidate overlapping ones.
-3. **Regression suite review** — Verify `tests/regression/` covers every bug class found during the project. For each class of bug found: would the system catch it automatically next time? If not, add a regression test, lint rule, hook, or contract. Ensure the regression suite is wired into CI/pre-push (it does not run in every bead iteration gate, only on CI/pre-push).
-4. **Update the initializer** — If the project revealed improvements to this workflow, propose updates to `project-kickoff-prompt.md` for the next project.
+**The verification gate is not a pre-commit hook.** It is the single command declared in `CLAUDE.md`, e.g.:
+```
+mypy --strict src/ tests/ && pytest && hypothesis --profile=ci && python -m proofs && dep-hallucinator check && ruff check
+```
+The gate is run by the agent during a bead and reported back via `<gate-result>PASS|FAIL</gate-result>`. ralph.sh mechanically enforces *that the tag is present*; the *truth* of the tag is the agent's self-report — which is why "Verification truth" is `ritual-bounded` in the decision register, not `bounded`. If you want stronger enforcement, add a pre-push hook that re-runs the gate command, and document the split in `CLAUDE.md`. Do not bury slow checks in "I'll run them later."
 
 ---
 
-## Standing Rules
+## Standing rules
 
-- Never guess. If you're unsure, ask me.
-- Never make changes outside the current bead's declared scope. The pre-commit hook enforces this, but respect it proactively — don't rely on the hook to catch you.
-- Always show me what you are about to do before doing it on anything non-trivial.
-- Update `docs/user-guide.md` whenever user-facing behavior changes.
-- Run `bd doctor` periodically to keep the beads database healthy.
-- `CLAUDE.md` is the constitution (core rules + learned patterns). `docs/skills/` holds domain-specific knowledge. The PRD is the contract. Beads are the work queue. All four must agree.
-- **Dependency validation is mandatory.** Every verification gate run includes dep-hallucinator (or equivalent registry check). Never install a package without confirming it exists in its registry and is not a known typosquat. When adding a new dependency, verify: (1) the package exists in the registry, (2) it has meaningful download history, (3) it matches what was intended (not a near-name). Pin exact versions in lockfiles.
-- **Enforce constraints structurally, not just verbally.** If a rule matters, it should have a hook, a test, or a gate that enforces it — not just a line in the prompt. When adding a new standing rule, ask: "Can this be enforced by a tool?" If yes, implement the enforcement and note it here. Prompt-level guidance supplements structural enforcement; it does not replace it.
-- **Use the right search tool.** Grep/ripgrep for exact string matches. Semantic search for conceptual queries (find code that handles authentication, what is similar to this function). Don't waste context on grep results when the query is conceptual, and don't pay vector search latency for exact lookups.
-- **Progressive disclosure of context.** Agents start with a small, stable entry point and are taught where to look next — not overwhelmed upfront. `CLAUDE.md` is the table of contents, not the encyclopedia. `patterns.md` is the lightweight first-read. Skill files load only when a bead is tagged for that domain. When adding new project knowledge, always ask: "Where is the narrowest place this can live?" Put it there, and add a pointer from the layer above if needed.
-- **Prefer dependencies the agent can reason about.** Choose composable, stable, well-documented libraries with broad adoption ("boring" technology). When a dependency is opaque, poorly documented, or introduces behavior the agent can't inspect from within the repo, consider reimplementing the needed subset — tightly integrated with project tooling (observability, testing) and with full test coverage. The goal is that every behavior in the system is legible to the agent directly from repository artifacts.
+- **Never guess.** If you're unsure, ask me.
+- **Never bypass a hook.** If a hook is wrong, fix the hook.
+- **The verification gate is the merge contract.** A green gate is a merge license. A red gate is a stop signal. There is no third option.
+- **Exhaustiveness is the agent's job.** Completeness of both registers is on you, not on me. Negative-space proofs are required for every new module; new decision points must be added to the decision register the moment they emerge.
+- **Constrain, don't dictate.** Your job is to bound the agent's choice space, not to script its decisions. If you find yourself writing prose like "first do X, then do Y," look for a hook or schema that would make the prose unnecessary.
+- **Methodology is yours to choose.** If you find a stronger technique than what's in `docs/skills/backpressure-catalog.md`, use it and update the catalog. Do not feel constrained by what previous projects used.
+- **When a rule starts mattering, encode it.** If you find yourself reminding the agent of a rule in prose, that rule should become a hook, a test, a schema, or a type. Promote, don't repeat.
+- **Confidence is reported, not negotiated.** Emit `<confidence level="HIGH|MEDIUM|LOW">reason</confidence>` after each bead. Routing happens in `ralph.sh`.
+- **Tag patterns with the model that wrote them.** Every entry under `CLAUDE.md ## Discovered Patterns` carries a `model:` tag. On model upgrade, every tagged pattern is re-validated or retired. This bounds "model upgrade drift" in the decision register.
+- **Structural over verbal at every layer.** This document is the smallest possible set of contracts. Anything you'd want to add to it should probably be a hook instead.

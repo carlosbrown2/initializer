@@ -8,25 +8,38 @@ Inspired by the [initializer agent pattern](https://www.anthropic.com/engineerin
 
 Your creativity and thought are needed to use Initializer properly. You wouldn't want it any other way.
 
+## Philosophy: outcome contracts, not procedures
+
+Initializer is built around a single principle: **specify what must be true, not how to make it true.** The kickoff prompt describes outcome contracts the agent must satisfy at every checkpoint. Sub-step ordering is the agent's call.
+
+This is the bitter-lesson play applied to engineering scaffolding. As models improve, prescriptive procedures become BLE-hobbling — they prevent the agent from finding shorter, better paths to the same outcome. Outcome contracts age with the model: a smarter agent will satisfy the same contract more efficiently, without requiring you to rewrite the prompt.
+
+### The two registers (mechanical backbone)
+
+Exhaustiveness is enforced through two live registers, both maintained by the agent and validated by pre-commit hooks:
+
+- **`docs/failure-modes.md`** — Every failure mode the system can have, paired with a mechanical check that catches it. Status must be `covered`, `proven-impossible`, or `out-of-scope`. Negative-space proofs are required for every new module.
+- **`docs/decision-register.md`** — Every place agent variance can enter the project (solution selection, sampling, scope creep, model upgrade drift, etc.) paired with the structural mechanism that bounds it. Status must be `bounded`, `agent-discretion`, or `escalation-only`. The decision register is how this template addresses LLM nondeterminism: not by eliminating sampling variance (impossible), but by funneling every agent choice through a falsifiable channel.
+
 ## How It Works
 
-The initializer walks you through 5 phases. Phase 1 is the core initialization — it produces all the artifacts subsequent agents need. Phases 2-5 handle planning and execution.
+The initializer walks you through 5 phases. Each phase is an outcome contract — done when its conditions hold and you've approved them. The agent sequences sub-work however makes sense.
 
 ### The 5 Phases
 
-1. **Spec (Initialization)** — Discovery, research, approach selection, PRD, backpressure design, tooling setup
-2. **Beads** — Break the PRD into dependency-aware implementation beads (quartets: impl, review, pare-down, compound)
-3. **Implementation (Ralph Loop)** — Each iteration: fresh agent, one bead, commit, stop. Memory persists via git, CLAUDE.md, skills, and progress.txt
-4. **Holistic Review** — Cross-cutting review across all completed work
-5. **Final Compound** — Project-level learnings, regression suite review, Initializer updates
+1. **Spec** — Done when the PRD, both registers, the review rubric, the verification gate, and the structural hooks all exist and you've approved them.
+2. **Beads** — Done when every PRD acceptance criterion is covered by a bead, every bead has a declared file scope, and you've approved the dependency graph. Each story decomposes into the quartet `impl → review → pare-down → compound`.
+3. **Implementation (Ralph Loop)** — Done when every bead is closed, every commit passed the verification gate, and both registers stayed complete. Each iteration is a fresh agent session that completes exactly one bead and stops.
+4. **Holistic Review** — Done when an adversarial cross-cutting review has tried to falsify every claim in both registers, and either failed (good) or filed a bead per finding.
+5. **Final Compound** — Done when every rule that mattered is enforced structurally (not in prose), every bug class has a regression test, and the kickoff prompt has been updated with anything the next project would benefit from.
 
 ### Key Properties
 
-- **Fresh context per task** — Each bead runs in a new agent session. No context rot across long projects — memory persists through git, `CLAUDE.md`, skills, and `progress.txt`, not conversation history.
+- **Fresh context per task** — Each bead runs in a new agent session. No context rot across long projects — memory persists through git, the registers, `CLAUDE.md`, skills, and `scripts/ralph/archive.txt`, not conversation history.
 - **Built-in quality loop** — Every feature goes through a quartet: implement → review → simplify → learn. Quality is structural, not optional.
-- **Self-improving codebase** — Compound beads feed discovered patterns back into project knowledge, so each iteration is better than the last.
+- **Self-improving codebase** — Compound beads feed discovered patterns back into project knowledge, tagged with the model that authored them so they can be retired or re-validated on model upgrade.
 - **Tunable autonomy** — Confidence routing lets you dial human oversight from full (`auto-land: none`) to zero (`auto-land: all`). The agent self-escalates when it's stuck.
-- **Structural enforcement** — Rules are enforced by hooks and gates, not just prompt instructions. If a constraint matters, it has a mechanical backstop.
+- **Structural enforcement** — Rules are enforced by hooks and gates, not just prompt instructions. If a constraint matters, it has a mechanical backstop. Nine pre-commit hooks ship by default: a fail-closed bead-type gate, scope enforcement, both register integrity checks, review/research write-protection, the review-artifact validator, the CLAUDE.md model-tag validator, the CLAUDE.md size guard, and the commit-message format check.
 
 ## Quick Start
 
@@ -66,20 +79,25 @@ source scripts/ralph/ralph.sh --tool amp 50
 ## What's Included
 
 ```
-project-kickoff-prompt.md   # The initializer — guides the agent through full project setup
+project-kickoff-prompt.md   # The initializer — outcome contracts for setting up a project
 CLAUDE.md                   # Skeleton project rules (filled in during Phase 1)
-progress.txt                # Running log with cross-session pattern transfer
 scripts/
   ralph/
     ralph.sh                # The Ralph loop — runs agents one bead at a time
-    prompt.md               # Per-iteration agent instructions
+    prompt.md               # Per-iteration outcome contract for each agent session
+    archive.txt             # Append-only progress log written during each iteration
     patterns.md             # Codebase patterns discovered during implementation
-    compact_progress.py     # Automatic progress.txt compaction
+    compact_progress.py     # Periodic log compaction
   hooks/
-    install.sh              # Pre-commit hook installer (scope, size, deps)
+    install.sh              # Pre-commit hook installer (9 hooks — see Configuration)
 docs/
-  skills/                   # Domain-specific knowledge (loaded per-bead)
-  reviews/                  # Review artifacts (created/deleted during triads)
+  failure-modes.md          # The failure-mode register (created in Phase 1)
+  decision-register.md      # The decision register (created in Phase 1)
+  skills/
+    review-rubric.md        # P1/P2/P3 severity rubric, cited by every review bead
+    backpressure-catalog.md # Menu of correctness techniques (load on demand)
+    *.md                    # Other domain-specific knowledge (loaded per-bead)
+  reviews/                  # Review/research artifacts (created/deleted during triads)
 tasks/                      # PRDs live here
 tests/
   regression/               # Regression tests from bugs found during the project
@@ -87,10 +105,26 @@ tests/
 
 ## Configuration
 
-- **Auto-land policy** — Set in `CLAUDE.md` under `## Confidence Routing`. Options: `all`, `high` (default in ralph.sh), `none`.
+- **Auto-land policy** — Set in `CLAUDE.md` under `## Confidence Routing`. Options: `all` (default), `high`, `none`.
 - **CLAUDE.md size limit** — Default 200 lines, enforced by pre-commit hook. Overflow goes to `docs/skills/`.
 - **Max retries** — Default 3, set in `ralph.sh` (`MAX_RETRIES`).
 - **Max iterations** — Default 30, passed as argument to `ralph.sh`.
+
+### Pre-commit hooks (installed by `./scripts/hooks/install.sh`)
+
+| Hook | What it enforces |
+|---|---|
+| Bead type fail-closed gate | When a bead is in progress, `.current-bead-type` must exist and hold a valid value (`impl`/`review`/`pare`/`compound`/`research`). Closes the "skip the marker → no enforcement" bypass for the hooks below. |
+| Scope enforcement | `impl`/`pare`/`compound` beads must declare `.current-bead-scope`; commits outside the scope are rejected (infrastructure paths exempted; compound beads also get `CLAUDE.md`, `docs/skills/`, and `tests/regression/`). |
+| Failure-mode register integrity | Every row in `docs/failure-modes.md` is single-line, its last cell holds an acceptable Status (`covered`/`proven-impossible`/`out-of-scope`), and every referenced check file exists. |
+| Decision register integrity | `docs/decision-register.md` has all baseline rows; every row is single-line with ≥5 columns and a last-cell Status of `bounded`/`ritual-bounded`/`agent-discretion`/`escalation-only`; every referenced bounding-mechanism file exists. |
+| Review/research write-protection | When `.current-bead-type` is `review` or `research`, only `docs/reviews/` may change. |
+| Review-artifact validator | Files in `docs/reviews/` (during a `review` bead) cite `docs/skills/review-rubric.md` and contain at least one `P[123].clause-name` severity marker. |
+| CLAUDE.md model-tag validator | Every `### ` entry under `## Discovered Patterns` carries an anchored `model:` tag. |
+| CLAUDE.md size guard | Rejects commits pushing `CLAUDE.md` over 200 lines. |
+| Commit-message format | Enforces `feat\|fix\|refactor\|review\|compound\|research\|docs\|chore\|test: ...` prefix. |
+
+A tenth hook, **dependency hallucination check**, ships commented out — uncomment after installing `dep-hallucinator` (or your preferred equivalent).
 
 ## Credits
 
