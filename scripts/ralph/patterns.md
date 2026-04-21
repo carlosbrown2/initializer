@@ -21,6 +21,19 @@ Status cell — flip to `bounded`; (3) the "Pending promotions" section below
 the table — remove the matching bullet. Missing any of the three leaves the
 register internally inconsistent.
 
+### Env-var sentinel to prevent test-invokes-gate-invokes-test recursion
+
+When the verification gate runs a test runner whose own suite contains a
+"gate passes against the current repo" sanity test, the test will recurse
+forever unless it skips when re-entered. Export a sentinel env var (e.g.
+`_BATS_GATE_REENTRY=1`) before running the gate from inside the sanity
+test; at the top of the test, `skip` if the sentinel is already set. The
+variable propagates to child processes naturally, so the nested bats
+invocation started by the gate sees the flag and bails out of just the
+one recursive test — the rest of the suite still runs in the nested call.
+This lets the gate keep invoking the full test suite (parser regressions
+surface mechanically) without infinite loops.
+
 ### One implementation, one library: hook script sources the library the tests import
 
 When a pre-commit hook and a test suite both need the same parser/validator

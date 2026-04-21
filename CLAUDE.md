@@ -20,10 +20,10 @@ This is the **initializer template** itself. The project under development is th
 ## Verification Gate
 
 ```
-bash -n scripts/ralph/ralph.sh && bash -n scripts/hooks/install.sh
+bash -n scripts/ralph/ralph.sh && bash -n scripts/hooks/install.sh && bash -n scripts/hooks/parsers.sh && bats tests/hooks/
 ```
 
-This is the minimum gate (shell parse check). It will grow as checks land (e.g. `&& bats tests/hooks/` once a follow-up bead audits the gate growth). Every clause must exit non-zero on real failure with no soft-fail escape — do not append `|| true` anywhere, it binds to the whole `&&` chain and silently masks every prior clause (see `docs/failure-modes.md`). Markdown files (e.g. `scripts/ralph/prompt.md`) are not parseable as bash and must not be added to the chain.
+The gate parse-checks every shell script the pre-commit chain depends on (`parsers.sh` is sourced by the generated hook at runtime, so a syntax error there silently breaks register integrity) and runs the full bats suite under `tests/hooks/` so parser and gate regressions surface mechanically. Every clause must exit non-zero on real failure with no soft-fail escape — do not append `|| true` anywhere, it binds to the whole `&&` chain and silently masks every prior clause (see `docs/failure-modes.md`). Markdown files (e.g. `scripts/ralph/prompt.md`) are not parseable as bash and must not be added to the chain.
 
 The gate is enforced at **two points**, and both must agree before a push reaches the remote:
 
