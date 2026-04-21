@@ -67,4 +67,45 @@ Each finding in `docs/reviews/<bead-id>.md` must include the clause name. Exampl
 **P3.docstring-drift** — `src/auth/login.py:10` docstring says "returns the user object" but the function returns a session token.
 ```
 
-The pre-commit review-artifact validator looks for clause citations of the form `P[123]\.[a-z-]+` and rejects review files that contain none.
+The pre-commit review-artifact validator looks for clause citations of the form `P[123]\.[a-z-]+` and rejects review files that contain none. It additionally requires that every cited clause is defined as a `**P[123].name**` bullet above — citing a well-formed but undefined clause (e.g., `P1.totally-made-up-clause`) is rejected as a shape-vs-membership Goodhart.
+
+---
+
+## Adversarial review technique
+
+Review verdicts are only as strong as the probing that produced them. A review bead should not just read the diff and cite clauses — it should try to *falsify* the two registers. Every `bounded` row is a candidate for "the bound is on a proxy, not the actual property." For each row touching the modules under review, construct an input or sequence that triggers the documented failure mode but slips past the listed check, and document the attempt (and the result) in the review artifact.
+
+**Common proxy-vs-property gaps to probe first:**
+- A regex that checks the *shape* of a string — does the check also verify *membership* in a canonical set? (e.g., `P[123]\.[a-z-]+` matches any well-formed token, not only clauses defined in the rubric.)
+- A literal-phrase `grep` (e.g., a check that only looks for the starter-rubric disclaimer sentence by exact substring) — does a trivial rewrite that keeps the Goodhart-able content but removes the phrase pass the check?
+- A glob or literal match for one syntactic variant of a bug class (`|| true`) — is the check as broad as the failure-mode row claims (all of `|| true`, `|| :`, `|| 0`, `|| exit 0`)?
+- A self-report signal (`<gate-result>`, `<confidence>`) — is there a matching observer that catches divergence, or only the self-report?
+
+### Verified-failure-scenario beats "I read the code carefully"
+
+Every P2 should be reproduced in a sandbox before being filed. A bead with a one-paragraph reproducer the next agent can re-run is strictly higher-quality than a bead with only a code citation. Recipe:
+
+```bash
+# Clone the repo into a scratch dir without beads/ state:
+rsync -a --exclude='.beads/bd.sock' --exclude='.git' "$PROJECT_ROOT/" /tmp/sandbox/
+cd /tmp/sandbox && git init -q && git add . && git commit -qm boot
+./scripts/hooks/install.sh
+
+# Mock `bd` so the in-progress-bead-dependent hooks fire:
+printf '#!/bin/bash\necho "agent-template-fakeN IN_PROGRESS Title"\n' > /tmp/bin/bd
+chmod +x /tmp/bin/bd; export PATH="/tmp/bin:$PATH"
+
+# The `bd list --status=in_progress` regex in the hook matches IDs of shape
+# [a-z_]*-[a-z0-9]*-[a-z0-9]* (three dash-separated segments) — the fake ID
+# must match or the hook will silently no-op and produce a false-negative pass.
+```
+
+Stage the adversarial edit, attempt the commit (or whatever operation the mechanism protects), and record the exit code, the block message, and whether the attempt succeeded.
+
+### Gotcha: pipe masks the exit code
+
+`bash hook | tail -10; echo $?` prints `tail`'s exit code (always 0), not the hook's. The BLOCKED message in the output is the real signal — don't trust `$?` after a pipe. Use `bash hook 2>&1 || true; echo $?` or `${PIPESTATUS[0]}` to capture the hook's actual exit.
+
+### Scope guardrail: tightenings become P2 follow-ups, not in-scope work
+
+Adversarial probing almost always uncovers tightenings the bead's declared scope does not cover. Convention: findings inside scope get a verdict; tightenings outside scope become P2 follow-up beads filed inline in the review artifact so the knowledge does not evaporate when the compound bead deletes the artifact. Do not silently expand the review's scope to ship the tightening.
