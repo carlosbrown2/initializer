@@ -20,10 +20,10 @@ This is the **initializer template** itself. The project under development is th
 ## Verification Gate
 
 ```
-bash -n scripts/ralph/ralph.sh && bash -n scripts/hooks/install.sh && bash -n scripts/ralph/prompt.md 2>/dev/null || true
+bash -n scripts/ralph/ralph.sh && bash -n scripts/hooks/install.sh
 ```
 
-This is the minimum gate (shell parse check). It will grow as checks land — when `agent-template-mhd` ships the `tests/hooks/` bats suite, append `&& bats tests/hooks/`.
+This is the minimum gate (shell parse check). It will grow as checks land (e.g. `&& bats tests/hooks/` once a follow-up bead audits the gate growth). Every clause must exit non-zero on real failure with no soft-fail escape — do not append `|| true` anywhere, it binds to the whole `&&` chain and silently masks every prior clause (see `docs/failure-modes.md`). Markdown files (e.g. `scripts/ralph/prompt.md`) are not parseable as bash and must not be added to the chain.
 
 The gate is enforced at **two points**, and both must agree before a push reaches the remote:
 
