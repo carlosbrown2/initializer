@@ -17,12 +17,11 @@ Every place agent variance can enter this project must appear here, paired with 
 | Artifact format | review / research beads | review artifacts cite the rubric and contain a severity clause | review artifact validator hook | bounded |
 | Sampling variance | every model invocation | `--print` mode, single-shot, fresh context per bead | scripts/ralph/ralph.sh invocation; one-bead-per-iteration | bounded |
 | Confidence | exit signal | `<confidence>` tag with HIGH/MEDIUM/LOW | scripts/ralph/ralph.sh parse_confidence + auto-land routing | bounded |
-| Verification truth | every "done" claim | one command from CLAUDE.md, not agent judgment | `<gate-result>` tag presence enforced by scripts/ralph/ralph.sh; pre-push re-run hook (pending) | ritual-bounded |
+| Verification truth | every "done" claim | one command from CLAUDE.md, not agent judgment | scripts/ralph/ralph.sh parses `<gate-result>` and persists to .last-gate-result; pre-push hook from scripts/hooks/install.sh re-runs the gate command on git push and blocks on divergence | bounded |
 | Architectural choice | new subsystem design | escalate to human; agent does not decide alone | `<promise>BLOCKED</promise>` with reason | escalation-only |
 
 ## Pending promotions
 
-Two rows are marked `ritual-bounded` pending audit beads that will promote them to `bounded`:
+One row remains `ritual-bounded` pending an audit bead that will promote it to `bounded`:
 
-- **Verification truth** → `bounded` when `agent-template-4mw` lands the pre-push hook that re-runs the gate command and compares the real exit code against the self-reported `<gate-result>` tag.
 - **Review verdict** → `bounded` when `agent-template-kjy` lands the pre-commit hook that rejects the unedited `docs/skills/review-rubric.md` starter.

@@ -318,6 +318,12 @@ RETRY_EOF
     GATE_RESULT="FAIL"
   fi
 
+  # Persist the agent's self-reported gate result so the pre-push hook
+  # (installed by scripts/hooks/install.sh) can detect divergence when the
+  # agent claimed PASS but the real gate command fails. This file is
+  # gitignored; it is local runtime state, not a committed artifact.
+  printf '%s\n' "$GATE_RESULT" > "$PROJECT_ROOT/.last-gate-result"
+
   # --- Confidence routing ---
   CONFIDENCE=$(parse_confidence "$OUTPUT")
   if [[ -n "$CONFIDENCE" ]]; then

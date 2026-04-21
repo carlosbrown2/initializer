@@ -32,6 +32,10 @@
 # Also installed:
 #   commit-msg: enforces "<type>: ..." prefix on every commit message
 #               (feat|fix|refactor|review|compound|research|docs|chore|test).
+#   pre-push:   re-runs the verification gate declared under "## Verification Gate"
+#               in CLAUDE.md. Blocks the push if the real gate fails, even when the
+#               agent self-reported PASS. Closes the gate-bypass hole that ralph.sh
+#               alone cannot cover (it only checks the <gate-result> tag is present).
 #
 # Usage: ./scripts/hooks/install.sh
 
@@ -565,6 +569,85 @@ HOOK_EOF
 
 chmod +x "$GIT_HOOKS_DIR/commit-msg"
 
+# --- Pre-push hook (re-runs the verification gate from CLAUDE.md) ---
+# Closes the gate-bypass hole: ralph.sh only verifies the <gate-result> tag is
+# present, not that the gate actually ran. The pre-push hook extracts the gate
+# command from CLAUDE.md and runs it for real, so the observed exit code is the
+# source of truth at push time. If ralph.sh has written .last-gate-result from
+# the agent's self-report, a divergence (self-reported PASS, observed FAIL) is
+# called out explicitly in the block message.
+cat > "$GIT_HOOKS_DIR/pre-push" << 'HOOK_EOF'
+#!/bin/bash
+# Pre-push hook: re-run the verification gate declared in CLAUDE.md and block
+# the push if it fails. See docs/decision-register.md row "Verification truth".
+set -euo pipefail
+
+PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+CLAUDE_MD="$PROJECT_ROOT/CLAUDE.md"
+
+if [ ! -f "$CLAUDE_MD" ]; then
+  echo "pre-push: CLAUDE.md not found at $CLAUDE_MD — skipping gate re-run."
+  exit 0
+fi
+
+# Convention: the gate is the first fenced code block directly under the
+# "## Verification Gate" heading in CLAUDE.md.
+GATE_CMD=$(awk '
+  /^## Verification Gate[[:space:]]*$/ { in_section = 1; next }
+  in_section && /^## / { in_section = 0 }
+  in_section && /^```/ { in_fence = !in_fence; next }
+  in_section && in_fence { print }
+' "$CLAUDE_MD")
+
+if [ -z "$GATE_CMD" ]; then
+  echo "BLOCKED: no verification gate found under '## Verification Gate' in CLAUDE.md."
+  echo "  Declare the gate as a fenced code block directly under that heading."
+  echo "  Never bypass with --no-verify."
+  exit 1
+fi
+
+echo "pre-push: re-running verification gate from CLAUDE.md..."
+if bash -c "$GATE_CMD"; then
+  OBSERVED="PASS"
+else
+  OBSERVED="FAIL"
+fi
+
+# Read the agent's self-reported gate result if ralph.sh persisted one.
+# Absent file → no divergence claim to check; the real exit code is authoritative.
+SELF_REPORT=""
+SELF_REPORT_FILE="$PROJECT_ROOT/.last-gate-result"
+if [ -f "$SELF_REPORT_FILE" ]; then
+  SELF_REPORT=$(tr -d '[:space:]' < "$SELF_REPORT_FILE")
+fi
+
+if [ "$OBSERVED" = "FAIL" ]; then
+  echo ""
+  echo "BLOCKED: verification gate failed on pre-push (observed=FAIL)."
+  if [ "$SELF_REPORT" = "PASS" ]; then
+    echo "  DIVERGENCE: agent self-reported PASS but the real gate fails."
+    echo "  This is the exact bypass the pre-push hook exists to catch."
+  elif [ -n "$SELF_REPORT" ]; then
+    echo "  Agent self-reported: $SELF_REPORT"
+  fi
+  echo "  Fix the failing check (or the gate itself). Never bypass with --no-verify."
+  exit 1
+fi
+
+if [ "$SELF_REPORT" = "FAIL" ]; then
+  echo ""
+  echo "BLOCKED: observed=PASS but agent self-reported FAIL."
+  echo "  Investigate the divergence before pushing (stale state file, environment drift,"
+  echo "  or the gate command is insensitive to the failure the agent saw)."
+  exit 1
+fi
+
+echo "pre-push: verification gate PASS."
+exit 0
+HOOK_EOF
+
+chmod +x "$GIT_HOOKS_DIR/pre-push"
+
 echo "Hooks installed successfully."
 echo "  - Pre-commit: Bead type fail-closed gate (active — requires .current-bead-type when a bead is in_progress)"
 echo "  - Pre-commit: Scope enforcement (active — requires .current-bead-scope for impl/pare/compound beads)"
@@ -576,3 +659,4 @@ echo "  - Pre-commit: CLAUDE.md model-tag validator (active — fires only if CL
 echo "  - Pre-commit: CLAUDE.md size guard (active)"
 echo "  - Pre-commit: Dependency hallucination check (commented out — uncomment after installing dep-hallucinator)"
 echo "  - Commit-msg: Format validation (active — feat|fix|refactor|review|compound|research|docs|chore|test)"
+echo "  - Pre-push:   Verification gate re-run (active — extracts gate from CLAUDE.md and compares against .last-gate-result if present)"

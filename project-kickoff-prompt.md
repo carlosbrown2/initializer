@@ -194,7 +194,7 @@ A tenth hook, **dependency hallucination check** (`dep-hallucinator` or equivale
 ```
 mypy --strict src/ tests/ && pytest && hypothesis --profile=ci && python -m proofs && dep-hallucinator check && ruff check
 ```
-The gate is run by the agent during a bead and reported back via `<gate-result>PASS|FAIL</gate-result>`. ralph.sh mechanically enforces *that the tag is present*; the *truth* of the tag is the agent's self-report — which is why "Verification truth" is `ritual-bounded` in the decision register, not `bounded`. If you want stronger enforcement, add a pre-push hook that re-runs the gate command, and document the split in `CLAUDE.md`. Do not bury slow checks in "I'll run them later."
+The gate is enforced at **two points**: (1) the agent runs it during a bead and reports via `<gate-result>PASS|FAIL</gate-result>`, which `ralph.sh` parses and persists to `.last-gate-result`; (2) the pre-push hook installed by `scripts/hooks/install.sh` extracts the gate from `CLAUDE.md`, re-runs it on `git push`, and blocks the push if the real exit code diverges from the self-report. Do not bury slow checks in "I'll run them later."
 
 ---
 

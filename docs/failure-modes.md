@@ -8,12 +8,12 @@ Every module, function, and data flow that can fail must appear here, paired wit
 
 | Module / function | Failure mode | Category | Check (file:test) | Status |
 |-------------------|--------------|----------|-------------------|--------|
+| scripts/ralph/ralph.sh gate-result parsing | agent emits `<gate-result>PASS</gate-result>` without running the gate (Goodhart / gate-bypass) | correctness | scripts/hooks/install.sh pre-push hook re-runs the gate command from CLAUDE.md and blocks push on non-zero exit; divergence against scripts/ralph/ralph.sh-persisted .last-gate-result is reported in the block message | covered |
 
 <!--
-Rows are added as the template grows. Three failure modes for the template itself
-are tracked as open audit beads in the beads database (see `bd list --labels initializer-audit`):
+Rows are added as the template grows. Two audit beads remain open for the template itself
+(see `bd list --labels initializer-audit`):
 
-  - gate-bypass: agent emits <gate-result>PASS</gate-result> without running the gate  → agent-template-4mw
   - parser edge cases in scripts/hooks/install.sh go unchecked                          → agent-template-mhd
   - unedited review-rubric starter lets "Review verdict" claim bounded falsely         → agent-template-kjy
 

@@ -23,10 +23,12 @@ This is the **initializer template** itself. The project under development is th
 bash -n scripts/ralph/ralph.sh && bash -n scripts/hooks/install.sh && bash -n scripts/ralph/prompt.md 2>/dev/null || true
 ```
 
-This is the minimum gate (shell parse check). It will grow as checks land:
+This is the minimum gate (shell parse check). It will grow as checks land — when `agent-template-mhd` ships the `tests/hooks/` bats suite, append `&& bats tests/hooks/`.
 
-- When `agent-template-mhd` ships the `tests/hooks/` bats suite, append `&& bats tests/hooks/`.
-- When `agent-template-4mw` ships the pre-push hook, the hook itself re-runs this command and compares the observed exit code against the agent's self-reported `<gate-result>` tag.
+The gate is enforced at **two points**, and both must agree before a push reaches the remote:
+
+1. **During the bead (soft):** the agent runs the gate and self-reports via `<gate-result>PASS|FAIL</gate-result>`. `scripts/ralph/ralph.sh` parses the tag and persists it to `.last-gate-result` (gitignored) so downstream tools can compare.
+2. **On `git push` (hard):** the pre-push hook installed by `scripts/hooks/install.sh` extracts this gate command, re-runs it, and blocks the push if the real exit code is non-zero. If `.last-gate-result` says PASS but the re-run fails, the block message calls out the divergence explicitly.
 
 ## Invariants
 

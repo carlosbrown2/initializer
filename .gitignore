@@ -4,6 +4,7 @@ scripts/ralph/confidence.log
 scripts/ralph/archive.txt
 .current-bead-type
 .current-bead-scope
+.last-gate-result
 
 # OS
 .DS_Store
