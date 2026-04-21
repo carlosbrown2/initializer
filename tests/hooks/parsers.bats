@@ -420,6 +420,159 @@ EOF
   [ -z "$output" ]
 }
 
+# --- rubric_clauses_extract ---------------------------------------------
+
+@test "rubric_clauses_extract: extracts only bold-marker clause definitions, ignores plain prose mentions" {
+  cat > "$TMPDIR_TEST/rubric.md" <<'EOF'
+# Project Rubric
+
+- **P1.correctness** — definition
+- **P2.weak-test** — definition
+
+This prose mentions P1.correctness and P3.style without bold markers.
+
+```
+example fence: P3.docstring-drift
+```
+EOF
+  run rubric_clauses_extract "$TMPDIR_TEST/rubric.md"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"P1.correctness"* ]]
+  [[ "$output" == *"P2.weak-test"* ]]
+  # Prose-only mentions and code-fence mentions are NOT extracted: only bold defs.
+  [[ "$output" != *"P3.style"* ]]
+  [[ "$output" != *"P3.docstring-drift"* ]]
+}
+
+@test "rubric_clauses_extract: missing rubric file returns 0 with empty output" {
+  run rubric_clauses_extract "$TMPDIR_TEST/does-not-exist.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "rubric_clauses_extract: deduplicates repeated definitions" {
+  cat > "$TMPDIR_TEST/rubric.md" <<'EOF'
+- **P1.correctness** — first def
+- **P1.correctness** — accidentally repeated
+EOF
+  run rubric_clauses_extract "$TMPDIR_TEST/rubric.md"
+  [ "$status" -eq 0 ]
+  # Should appear exactly once
+  count=$(echo "$output" | grep -c '^P1\.correctness$')
+  [ "$count" -eq 1 ]
+}
+
+# --- review_artifact_clauses_check --------------------------------------
+
+@test "review_artifact_clauses_check: accepts artifact citing only clauses defined in rubric" {
+  cat > "$TMPDIR_TEST/rubric.md" <<'EOF'
+# Project Rubric
+- **P1.correctness** — wrong result
+- **P1.my-special** — domain-specific
+EOF
+  cat > "$TMPDIR_TEST/artifact.md" <<'EOF'
+Findings cite clauses from docs/skills/review-rubric.md.
+
+**P1.correctness** — found a real bug.
+**P1.my-special** — another real one.
+EOF
+  run review_artifact_clauses_check "$TMPDIR_TEST/artifact.md" "$TMPDIR_TEST/rubric.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "review_artifact_clauses_check: rejects artifact citing an invented clause" {
+  cat > "$TMPDIR_TEST/rubric.md" <<'EOF'
+# Project Rubric
+- **P1.correctness** — wrong result
+EOF
+  cat > "$TMPDIR_TEST/artifact.md" <<'EOF'
+**P1.correctness** — real
+**P1.totally-made-up-clause** — invented finding
+EOF
+  run review_artifact_clauses_check "$TMPDIR_TEST/artifact.md" "$TMPDIR_TEST/rubric.md"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"P1.totally-made-up-clause"* ]]
+  [[ "$output" != *"P1.correctness"* ]]
+}
+
+@test "review_artifact_clauses_check: lists every invented clause, not just the first" {
+  cat > "$TMPDIR_TEST/rubric.md" <<'EOF'
+# Project Rubric
+- **P1.correctness** — wrong
+EOF
+  cat > "$TMPDIR_TEST/artifact.md" <<'EOF'
+**P1.fake-one** — first
+**P2.fake-two** — second
+**P3.fake-three** — third
+EOF
+  run review_artifact_clauses_check "$TMPDIR_TEST/artifact.md" "$TMPDIR_TEST/rubric.md"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"P1.fake-one"* ]]
+  [[ "$output" == *"P2.fake-two"* ]]
+  [[ "$output" == *"P3.fake-three"* ]]
+}
+
+@test "review_artifact_clauses_check: adding a new clause to the rubric makes it valid (no separate registration)" {
+  # Acceptance criterion from agent-template-c7x: defining a clause in the
+  # rubric is the only step needed to make it citable.
+  cat > "$TMPDIR_TEST/rubric.md" <<'EOF'
+# Project Rubric
+- **P1.brand-new-clause** — newly added
+EOF
+  cat > "$TMPDIR_TEST/artifact.md" <<'EOF'
+**P1.brand-new-clause** — citing the brand new clause
+EOF
+  run review_artifact_clauses_check "$TMPDIR_TEST/artifact.md" "$TMPDIR_TEST/rubric.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "review_artifact_clauses_check: rejects when rubric has no clauses defined" {
+  cat > "$TMPDIR_TEST/rubric.md" <<'EOF'
+# Project Rubric (empty body, no clauses)
+EOF
+  cat > "$TMPDIR_TEST/artifact.md" <<'EOF'
+**P1.correctness** — citing
+EOF
+  run review_artifact_clauses_check "$TMPDIR_TEST/artifact.md" "$TMPDIR_TEST/rubric.md"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no clauses"* ]]
+}
+
+@test "review_artifact_clauses_check: catches plain (non-bold) citation of an invented clause" {
+  # Citations in artifacts often appear as **P1.foo** in headings but also as
+  # plain `P1.foo` in surrounding prose. Both forms must be membership-checked.
+  cat > "$TMPDIR_TEST/rubric.md" <<'EOF'
+- **P1.correctness** — wrong
+EOF
+  cat > "$TMPDIR_TEST/artifact.md" <<'EOF'
+The verdict is bounded by P1.fake-clause despite the clause not existing.
+EOF
+  run review_artifact_clauses_check "$TMPDIR_TEST/artifact.md" "$TMPDIR_TEST/rubric.md"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"P1.fake-clause"* ]]
+}
+
+@test "review_artifact_clauses_check: smoke against real rubric — all real clauses pass" {
+  # Synthesize an artifact citing every clause currently defined in the project's
+  # real rubric. This both exercises the full extract path and acts as a drift
+  # detector: if the rubric ever loses a clause that an artifact relies on, the
+  # smoke fixture itself becomes the canary.
+  RUBRIC="$PROJECT_ROOT/docs/skills/review-rubric.md"
+  CLAUSES=$(rubric_clauses_extract "$RUBRIC")
+  [ -n "$CLAUSES" ]
+  {
+    echo "Findings cite clauses from docs/skills/review-rubric.md."
+    while IFS= read -r c; do
+      [ -z "$c" ] && continue
+      echo "**$c** — synthetic finding for smoke test"
+    done <<< "$CLAUSES"
+  } > "$TMPDIR_TEST/synthetic.md"
+
+  run review_artifact_clauses_check "$TMPDIR_TEST/synthetic.md" "$RUBRIC"
+  [ "$status" -eq 0 ]
+}
+
 # --- Smoke tests against the real project registers ---------------------
 # These catch drift: if the real registers in this repo ever diverge from
 # what the parsers accept, the CI gate fails loudly.

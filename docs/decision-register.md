@@ -8,7 +8,7 @@ Every place agent variance can enter this project must appear here, paired with 
 |----------------|-----------------|--------------------|-------------|--------|
 | Solution selection | impl bead execution | every acceptance criterion bound to a mechanical check | failure-mode register hook in scripts/hooks/install.sh | bounded |
 | Acceptance interpretation | every "is it done" call | every PRD criterion expressible as test/type/proof | PRD review at Phase 1; re-validate on PRD edit | ritual-bounded |
-| Review verdict | review beads | severity rubric in docs/skills/review-rubric.md (no longer the unedited starter); each finding cites a clause | review artifact validator hook + rubric-edit guard hook in scripts/hooks/install.sh | bounded |
+| Review verdict | review beads | severity rubric in docs/skills/review-rubric.md (no longer the unedited starter); each finding cites a clause that is defined in the rubric (membership-checked, not just clause-shape) | review artifact validator hook in scripts/hooks/install.sh + rubric-edit guard hook + scripts/hooks/parsers.sh review_artifact_clauses_check | bounded |
 | Pattern extraction | compound beads | every promoted pattern carries a `model:` tag and a retire-on-upgrade rule | CLAUDE.md model-tag validator hook | bounded |
 | Decomposition | Phase 2 | bead schema: scope, deps, criteria, size, register DoD | beads CLI + human dep-graph review at Phase 2 | ritual-bounded |
 | Tool / search choice | execution | unconstrained — model picks | none (rationale: search strategy is exactly where we want model freedom) | agent-discretion |

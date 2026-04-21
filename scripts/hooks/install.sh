@@ -27,8 +27,10 @@
 #      Status (bounded | ritual-bounded | agent-discretion | escalation-only), and every
 #      bounding-mechanism file path it references must exist on disk.
 #   9. Review artifact validator — when .current-bead-type=review, files staged in
-#      docs/reviews/ must cite docs/skills/review-rubric.md AND contain at least one
-#      severity clause citation (P1.foo, P2.foo, P3.foo).
+#      docs/reviews/ must cite docs/skills/review-rubric.md, contain at least one
+#      severity clause citation (P1.foo, P2.foo, P3.foo), AND every cited clause
+#      must exist as a `**P[123].name**` definition in the rubric (membership check
+#      via review_artifact_clauses_check in scripts/hooks/parsers.sh).
 #  10. CLAUDE.md model-tag validator — every entry under ## Discovered Patterns in
 #      CLAUDE.md must carry a `model:` tag identifying its source model.
 #
@@ -384,9 +386,13 @@ fi
 # When .current-bead-type=review, files staged in docs/reviews/ must:
 #   1. Cite docs/skills/review-rubric.md (the bounding mechanism for "review verdict")
 #   2. Contain at least one severity clause citation (P1.foo, P2.foo, P3.foo)
+#   3. Every cited clause must exist as a definition in docs/skills/review-rubric.md
+#      (closes the shape-vs-membership Goodhart: previously any well-formed token
+#      passed regardless of whether the rubric defined it).
 # Research artifacts are not subject to this — they don't classify findings by severity.
 if [ "$BEAD_TYPE" = "review" ]; then
   REVIEW_FILES=$(git diff --cached --name-only --diff-filter=AM | grep '^docs/reviews/.*\.md$' || true)
+  RUBRIC_PATH="$PROJECT_ROOT/docs/skills/review-rubric.md"
   for f in $REVIEW_FILES; do
     [ -f "$PROJECT_ROOT/$f" ] || continue
 
@@ -406,6 +412,25 @@ if [ "$BEAD_TYPE" = "review" ]; then
       echo ""
       echo "  Every finding must cite a clause from docs/skills/review-rubric.md."
       echo "  Examples: P1.correctness, P2.weak-test, P3.docstring-drift"
+      exit 1
+    fi
+
+    if ! invented_clauses=$(review_artifact_clauses_check "$PROJECT_ROOT/$f" "$RUBRIC_PATH"); then
+      echo "BLOCKED: $f cites clauses that are not defined in docs/skills/review-rubric.md."
+      echo ""
+      echo "  Offending clauses:"
+      echo "$invented_clauses" | sed 's/^/    /'
+      echo ""
+      echo "  The validator extracts the canonical clause set from bold-marker definitions"
+      echo "  ('**P[123].name**') in the rubric. Citing a clause that isn't defined makes"
+      echo "  'each finding cites a clause' (decision-register: Review verdict) into a Goodhart"
+      echo "  on clause-shape rather than membership."
+      echo ""
+      echo "  How to fix: either"
+      echo "    1. correct the citation to a clause that exists in the rubric, OR"
+      echo "    2. add the new clause to docs/skills/review-rubric.md as a"
+      echo "       '**P[123].name**' bullet under '## Severity definitions' so it becomes part"
+      echo "       of the canonical set (no separate registration step is needed)."
       exit 1
     fi
   done

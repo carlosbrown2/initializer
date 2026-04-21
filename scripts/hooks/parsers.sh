@@ -233,6 +233,57 @@ rubric_edit_check() {
   return 0
 }
 
+# rubric_clauses_extract <rubric-path>
+# Prints the canonical clause names defined by the rubric (one per line, sorted
+# unique). A clause is recognized only when it appears as a bold-marker definition
+# (`**P[123].name**`); plain mentions in prose or code fences are ignored, so a
+# rubric is the single source of truth for which clauses exist. A missing rubric
+# returns 0 with empty output (callers decide how to handle).
+rubric_clauses_extract() {
+  local rubric="$1"
+  [ -f "$rubric" ] || return 0
+  grep -oE '\*\*P[123]\.[a-z][a-z-]*\*\*' "$rubric" 2>/dev/null \
+    | sed -E 's/\*\*//g' \
+    | sort -u
+}
+
+# review_artifact_clauses_check <artifact-path> <rubric-path>
+# Returns 0 if every clause cited in the artifact (any token matching the
+# `P[123].name` shape) is a clause defined in the rubric. Returns 1 with the
+# offending clause names on stdout if any cited clause is not in the rubric, or
+# if the rubric defines no clauses at all (which would make every citation
+# vacuously invalid). This closes the Goodhart hole where the validator only
+# checked clause-shape, not membership.
+review_artifact_clauses_check() {
+  local artifact="$1"
+  local rubric="$2"
+
+  local valid_clauses
+  valid_clauses=$(rubric_clauses_extract "$rubric")
+  if [ -z "$valid_clauses" ]; then
+    echo "rubric defines no clauses ($rubric) — cannot validate artifact citations"
+    return 1
+  fi
+
+  local cited
+  cited=$(grep -oE 'P[123]\.[a-z][a-z-]*' "$artifact" 2>/dev/null | sort -u)
+
+  local invented="" clause
+  while IFS= read -r clause; do
+    [ -z "$clause" ] && continue
+    if ! printf '%s\n' "$valid_clauses" | grep -qx "$clause"; then
+      invented="${invented}${invented:+
+}${clause}"
+    fi
+  done <<< "$cited"
+
+  if [ -n "$invented" ]; then
+    printf '%s\n' "$invented"
+    return 1
+  fi
+  return 0
+}
+
 # claude_model_tags_check <claude-md-path>
 claude_model_tags_check() {
   local claude_md="$1"
