@@ -53,16 +53,20 @@ parse_confidence() {
 # wrong level).
 parse_confidence_bead_done() {
   local output="$1"
-  # Use awk for multi-line regex matching. Anchor the match to BEAD_DONE so
-  # the "last tag wins" interpretation falls out naturally — the only tag
-  # that can match is the one immediately before the promise.
+  # Accumulate all input into a buffer and match in END. BWK awk (macOS
+  # default) silently ignores RS="\0" and falls back to per-line processing,
+  # which loses any match whose whitespace between </confidence> and
+  # <promise> spans a newline. Buffer-and-match-in-END is portable across
+  # gawk and BWK.
   echo "$output" | awk '
-    BEGIN { RS = "\0" }
-    {
-      # Capture level of the LAST <confidence level="X"> that is followed
-      # only by whitespace and then <promise>BEAD_DONE</promise>.
-      if (match($0, /<confidence level="(HIGH|MEDIUM|LOW)">[^<]*<\/confidence>[[:space:]]*<promise>BEAD_DONE<\/promise>/)) {
-        segment = substr($0, RSTART, RLENGTH)
+    { buf = buf $0 "\n" }
+    END {
+      # Capture level of the <confidence level="X"> that is followed only
+      # by whitespace and then <promise>BEAD_DONE</promise>. Because the
+      # pattern requires whitespace-only between the closing tag and the
+      # promise, the only tag that can match is the one immediately before.
+      if (match(buf, /<confidence level="(HIGH|MEDIUM|LOW)">[^<]*<\/confidence>[[:space:]]*<promise>BEAD_DONE<\/promise>/)) {
+        segment = substr(buf, RSTART, RLENGTH)
         if (match(segment, /<confidence level="(HIGH|MEDIUM|LOW)">/)) {
           tag = substr(segment, RSTART, RLENGTH)
           # Pull the level out of the tag.

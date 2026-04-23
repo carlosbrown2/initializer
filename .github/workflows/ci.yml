@@ -43,7 +43,7 @@ jobs:
             && bash -n scripts/hooks/install.sh \
             && bash -n scripts/hooks/parsers.sh \
             && shellcheck -x scripts/ralph/ralph.sh scripts/ralph/lib.sh scripts/hooks/install.sh scripts/hooks/parsers.sh \
-            && bd --version 2>/dev/null | grep -qE '^bd (0\.[3-9]|[1-9])' \
+            && bd --version 2>/dev/null | grep -qE '^bd version ([1-9]|0\.([3-9]|[1-9][0-9]))' \
             && bats tests/hooks/
 
   # Markdown lint keeps prose drift out of load-bearing files (CLAUDE.md,
