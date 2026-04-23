@@ -85,6 +85,29 @@ fm_status_check() {
   return 0
 }
 
+# file_ref_is_valid <project-root> <path> <staged-newline-separated>
+# Returns 0 if the path is a valid register reference: exists on disk, is
+# staged for addition, or is gitignored (a documented runtime artifact —
+# e.g., scripts/ralph/archive.txt — that will not exist in a fresh checkout
+# but is load-bearing by name in the register). Returns 1 otherwise.
+#
+# The gitignored branch closes a class-bug where fm_file_refs_check passes
+# locally (because prior ralph runs created the runtime file) but fails on
+# CI / fresh clone. Binds the check to "is this a declared reference" rather
+# than to the proxy "does this file happen to exist right now."
+file_ref_is_valid() {
+  local project_root="$1"
+  local file_part="$2"
+  local staged="$3"
+  [ -f "$project_root/$file_part" ] && return 0
+  printf '%s\n' "$staged" | grep -qx "$file_part" && return 0
+  if command -v git >/dev/null 2>&1 \
+     && git -C "$project_root" check-ignore -q "$file_part" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
 # fm_file_refs_check <register-path> <project-root> [<staged-files-newline-separated>]
 fm_file_refs_check() {
   local fm_register="$1"
@@ -95,11 +118,9 @@ fm_file_refs_check() {
   while IFS= read -r ref; do
     [ -z "$ref" ] && continue
     file_part="${ref%%::*}"
-    if [ ! -f "$project_root/$file_part" ]; then
-      if ! printf '%s\n' "$staged" | grep -qx "$file_part"; then
-        missing="${missing}
+    if ! file_ref_is_valid "$project_root" "$file_part" "$staged"; then
+      missing="${missing}
     ${ref}"
-      fi
     fi
   done < <(grep -oE '(tests?|proofs|src|spec|docs|tasks|scripts|lib|pkg)/[a-zA-Z0-9_/.-]+\.[a-zA-Z0-9]+(::[a-zA-Z0-9_]+)?' "$fm_register" 2>/dev/null | sort -u)
 
@@ -179,11 +200,9 @@ dec_file_refs_check() {
   local missing="" ref
   while IFS= read -r ref; do
     [ -z "$ref" ] && continue
-    if [ ! -f "$project_root/$ref" ]; then
-      if ! printf '%s\n' "$staged" | grep -qx "$ref"; then
-        missing="${missing}
+    if ! file_ref_is_valid "$project_root" "$ref" "$staged"; then
+      missing="${missing}
     ${ref}"
-      fi
     fi
   done < <(grep -oE '(tests?|proofs|src|spec|docs|tasks|scripts|lib|pkg)/[a-zA-Z0-9_/.-]+\.[a-zA-Z0-9]+' "$dec_register" 2>/dev/null | sort -u)
 

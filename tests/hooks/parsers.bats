@@ -132,6 +132,41 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "fm_file_refs_check: accepts gitignored runtime-artifact path that does not exist on disk" {
+  # A register row may reference a runtime artifact (scripts/ralph/archive.txt,
+  # scripts/ralph/confidence.log, etc.) by name. The file is gitignored by
+  # design and will not exist in a fresh checkout / CI. The check must not
+  # fail — it should treat gitignored paths as declared references, not
+  # missing files. Without this, the gate passes locally only because prior
+  # ralph runs happened to leave the file around.
+  ( cd "$TMPDIR_TEST" && git init -q && \
+    printf 'scripts/runtime/archive.txt\n' > .gitignore && \
+    mkdir -p scripts/runtime && \
+    git add .gitignore && git -c user.email=t@t -c user.name=t commit -q -m init )
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| Module | Failure mode | Category | Check | Status |
+| mod-a  | ghost        | correctness | scripts/runtime/archive.txt | covered |
+EOF
+  run fm_file_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST" ""
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "fm_file_refs_check: still rejects non-gitignored missing path (no false accept)" {
+  # Guard the widening: a path that is NOT gitignored and does NOT exist
+  # must still fail, so a typo in the register is still caught.
+  ( cd "$TMPDIR_TEST" && git init -q && \
+    printf 'scripts/runtime/archive.txt\n' > .gitignore && \
+    git add .gitignore && git -c user.email=t@t -c user.name=t commit -q -m init )
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| Module | Failure mode | Category | Check | Status |
+| mod-a  | typo         | correctness | scripts/typo-not-ignored.txt | covered |
+EOF
+  run fm_file_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST" ""
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"scripts/typo-not-ignored.txt"* ]]
+}
+
 # --- dec_required_rows_check ---------------------------------------------
 
 @test "dec_required_rows_check: accepts register with all baseline decisions" {

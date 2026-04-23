@@ -1,10 +1,14 @@
 // markdownlint-cli2 config. Consumed by the markdown-lint job in
 // .github/workflows/ci.yml and by any local editor integration.
 // Rules are intentionally relaxed — the registers use long table rows and
-// HTML comments, and the gate's truth is shellcheck + bats, not prose style.
+// HTML comments, and CLAUDE.md's Discovered Patterns section binds each
+// `model:` tag line to its `### ` heading by design. The gate's truth is
+// shellcheck + bats, not prose style.
 {
   "default": true,
   "MD013": false,  // line-length: registers use long single-line rows by design
+  "MD022": false,  // blanks-around-headings: model: tag sits directly under the pattern heading
   "MD033": false,  // inline-html: <!-- --> comments in registers
+  "MD038": false,  // no-space-in-code: `### ` is literally the markdown heading prefix being documented
   "MD041": false   // first-line-h1: some docs lead with a paragraph
 }
