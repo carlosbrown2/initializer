@@ -14,11 +14,10 @@ You are an autonomous coding agent. Each iteration, you complete **exactly one b
 Before you emit `BEAD_DONE`, all of the following must be true:
 
 1. The bead is closed in beads (`bd close <id>`).
-2. The verification gate (single command from `CLAUDE.md`) is green.
-3. You emitted `<gate-result>PASS</gate-result>` (or `FAIL` if the gate failed and you're escalating).
-4. `.current-bead-type` and `.current-bead-scope` (if it was set) have been removed.
-5. `scripts/ralph/archive.txt` has a new progress entry with the exact header `## YYYY-MM-DD HH:MM - <bead-id>` (the ralph loop's `archive_schema_check` verifies every BEAD_DONE iteration has a matching block — a missing block fails the next push).
-6. You emitted a `<confidence>` signal immediately followed by `<promise>BEAD_DONE</promise>`.
+2. The verification gate (single command from `CLAUDE.md`) is green. Run it yourself before emitting `BEAD_DONE` — `ralph.sh` will re-run it immediately after your exit and bind `.last-gate-result` to the real exit code. A BEAD_DONE emitted over a red gate is caught there (and again by the pre-push hook on push).
+3. `.current-bead-type` and `.current-bead-scope` (if it was set) have been removed.
+4. `scripts/ralph/archive.txt` has a new progress entry with the exact header `## YYYY-MM-DD HH:MM - <bead-id>` (the ralph loop's `archive_schema_check` verifies every BEAD_DONE iteration has a matching block — a missing block fails the next push).
+5. You emitted a `<confidence>` signal immediately followed by `<promise>BEAD_DONE</promise>`.
 
 The bead-type-specific contracts below add further requirements per type. They do not replace these six.
 
@@ -32,7 +31,7 @@ These are the states that must hold before you exit. Sequence the work however y
 - **If this is a retry** (`scripts/ralph/retry_state.json` shows `fail_count > 0` for this bead), the prior attempt has been diagnosed in `scripts/ralph/archive.txt` and the new approach is *meaningfully different* from the old one. On the third attempt, the strategy is fundamentally different or you have escalated via `BLOCKED`.
 - **The bead's type-specific work is complete** (see the bead-type contracts below).
 - **The failure-mode register has been updated** for any new failure mode this bead introduced. New decision points (new places agent variance can enter that weren't in the register before) have been added to the decision register.
-- **The verification gate has been run** and its outcome reported as `<gate-result>PASS</gate-result>` or `<gate-result>FAIL</gate-result>`.
+- **The verification gate has been run** and is green. No tag emission is required — `ralph.sh` re-runs the gate itself after you exit and writes the real result to `.last-gate-result`. If your own run shows FAIL, do not emit BEAD_DONE; fix the failure or emit `BLOCKED` / `REWORK_REQUIRED` with a reason.
 - **The bead is closed in beads** and beads state is persisted.
 - **`scripts/ralph/archive.txt` has a new progress entry** with the required `## YYYY-MM-DD HH:MM - <bead-id>` header (see Progress report format below). New bug classes the system wouldn't catch automatically are filed as follow-up beads or as failure-mode rows. Reusable patterns also go in `scripts/ralph/patterns.md`.
 - **The marker files are absent** (`.current-bead-type` and `.current-bead-scope` removed).

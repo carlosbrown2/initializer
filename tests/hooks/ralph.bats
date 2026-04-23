@@ -442,6 +442,73 @@ Now let me also mention that the failure-modes register has a new row.
   [ -z "$output" ]
 }
 
+# --- run_gate ------------------------------------------------------------
+
+@test "run_gate: writes PASS and returns 0 when gate command succeeds" {
+  # The happy path: honest gate, honest result. Covers the post-agent
+  # re-run that ralph.sh does on BEAD_DONE to replace the prior
+  # <gate-result> self-report. Uses `true` as a trivial passing gate so
+  # the test cost is zero — the real gate has its own coverage in
+  # tests/hooks/gate.bats.
+  result_file="$TMPDIR_TEST/.last-gate-result"
+  run run_gate "true" "$result_file"
+  [ "$status" -eq 0 ]
+  [ -f "$result_file" ]
+  [ "$(cat "$result_file")" = "PASS" ]
+}
+
+@test "run_gate: writes FAIL and returns non-zero when gate command fails" {
+  # The property that keeps an agent from BEAD_DONE-ing over red code:
+  # a failing gate writes FAIL and returns non-zero. The pre-push hook
+  # then sees FAIL in .last-gate-result and blocks the push (or re-runs
+  # and agrees). If this regresses to soft-fail (always writes PASS),
+  # the self-report trust gap quietly re-opens.
+  result_file="$TMPDIR_TEST/.last-gate-result"
+  run run_gate "false" "$result_file"
+  [ "$status" -ne 0 ]
+  [ -f "$result_file" ]
+  [ "$(cat "$result_file")" = "FAIL" ]
+}
+
+@test "run_gate: writes SKIPPED and returns non-zero on empty gate command" {
+  # Empty gate_cmd means the extractor (gate_command_extract) found no
+  # fenced block under ## Verification Gate. Fail closed: return non-zero
+  # and record SKIPPED so the caller does not treat "I didn't run
+  # anything" as PASS. A callers-trust-exit-code caller BLOCKS here; a
+  # callers-trust-file caller sees SKIPPED and escalates.
+  result_file="$TMPDIR_TEST/.last-gate-result"
+  run run_gate "" "$result_file"
+  [ "$status" -ne 0 ]
+  [ -f "$result_file" ]
+  [ "$(cat "$result_file")" = "SKIPPED" ]
+}
+
+@test "run_gate: writes SKIPPED (not FAIL) when gate is absent — distinguishes 'missing' from 'red'" {
+  # Structural: the three values PASS / FAIL / SKIPPED must all be
+  # distinguishable, because the pre-push hook reads the file. A
+  # SKIPPED-as-FAIL collapse would make "gate ran and failed" and "gate
+  # was never found" look identical to downstream readers, which would
+  # Goodhart the pre-push divergence check.
+  result_file="$TMPDIR_TEST/.last-gate-result"
+  run run_gate "" "$result_file"
+  [ "$status" -ne 0 ]
+  [ "$(cat "$result_file")" != "FAIL" ]
+  [ "$(cat "$result_file")" != "PASS" ]
+}
+
+@test "run_gate: overwrites a prior stale result rather than appending" {
+  # Adversarial case: a prior iteration wrote PASS; a current failing
+  # gate must overwrite, not append. A naive `>>` would leave PASS on
+  # the first line and FAIL on the second, and `tr -d '[:space:]'` in
+  # the pre-push hook would read "PASSFAIL" — neither value — and skip
+  # its divergence logic entirely. `>` truncation is the binding here.
+  result_file="$TMPDIR_TEST/.last-gate-result"
+  printf 'PASS\n' > "$result_file"
+  run run_gate "false" "$result_file"
+  [ "$status" -ne 0 ]
+  [ "$(cat "$result_file")" = "FAIL" ]
+}
+
 # --- BEAD_ID_REGEX drift --------------------------------------------------
 
 @test "BEAD_ID_REGEX in lib.sh matches PARSERS_BEAD_ID_REGEX in parsers.sh byte-for-byte" {

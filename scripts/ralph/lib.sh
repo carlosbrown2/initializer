@@ -16,6 +16,45 @@
 # which is exactly the bug class the decision register names.
 BEAD_ID_REGEX='[a-z][-a-z0-9]*-[a-z0-9]{2,}'
 
+# Execute the verification gate command and record the real exit code.
+#
+# Replaces the prior design where the agent ran the gate and self-reported
+# via `<gate-result>PASS|FAIL</gate-result>`. The self-report was a proxy:
+# an agent could skip, misquote, or hallucinate the run and leave a green
+# tag next to red code. Binding `.last-gate-result` to the *observed* exit
+# code of `bash -c "$gate_cmd"` replaces a prediction with a measurement.
+#
+# The pre-push hook (scripts/hooks/install.sh) stays in place as defense
+# in depth — it re-runs the same gate on push and blocks on divergence
+# against the file this function writes. The two callers reach identical
+# verdicts against an honest gate; a divergence now means the gate itself
+# changed between iteration and push (env drift, untracked file moved,
+# tool version changed), not that the agent lied.
+#
+# Args:
+#   gate_cmd     — the verification gate command string (from CLAUDE.md
+#                  via scripts/hooks/parsers.sh gate_command_extract).
+#   result_file  — absolute path to .last-gate-result; overwritten with
+#                  PASS, FAIL, or SKIPPED.
+# Returns:
+#   0 on PASS; non-zero on FAIL or empty gate_cmd (SKIPPED). Callers that
+#   want to route on the outcome can read the file or check the exit code.
+run_gate() {
+  local gate_cmd="$1"
+  local result_file="$2"
+  if [ -z "$gate_cmd" ]; then
+    printf 'SKIPPED\n' > "$result_file"
+    return 1
+  fi
+  if bash -c "$gate_cmd"; then
+    printf 'PASS\n' > "$result_file"
+    return 0
+  else
+    printf 'FAIL\n' > "$result_file"
+    return 1
+  fi
+}
+
 # Extract confidence level from agent output.
 #
 # Patterns require the closing `>` so the placeholder string

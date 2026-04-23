@@ -18,6 +18,7 @@ _ralph_cleanup() {
   unset _RALPH_SCRIPT_DIR _RALPH_PROJECT_ROOT
   unset _RALPH_PROMPT_FILE _RALPH_PATTERNS_FILE _RALPH_ARCHIVE_FILE
   unset _RALPH_CONFIDENCE_LOG _RALPH_RETRY_STATE_FILE _RALPH_LIB
+  unset _RALPH_PARSERS _RALPH_GATE_CMD
   unset _RALPH_FAIL_COUNT _RALPH_LAST_FAILED_BEAD _RALPH_MAX_RETRIES
   unset _RALPH_I _RALPH_CURRENT_BEAD _RALPH_ACTIVE_BEAD
   unset _RALPH_BEAD_ID _RALPH_BEAD_TITLE _RALPH_OUTPUT
@@ -117,8 +118,8 @@ _RALPH_RETRY_STATE_FILE="$_RALPH_SCRIPT_DIR/retry_state.json"
 
 # Source routing functions (parse_confidence, parse_confidence_bead_done,
 # read_auto_land_policy, should_auto_land, compute_retry_state,
-# extract_prereq_bead_id) so tests/hooks/ralph.bats exercises the same
-# definitions the loop uses.
+# extract_prereq_bead_id, run_gate) so tests/hooks/ralph.bats exercises
+# the same definitions the loop uses.
 _RALPH_LIB="$_RALPH_SCRIPT_DIR/lib.sh"
 if [ ! -f "$_RALPH_LIB" ]; then
   echo "Error: scripts/ralph/lib.sh not found at $_RALPH_LIB"
@@ -127,6 +128,28 @@ if [ ! -f "$_RALPH_LIB" ]; then
 fi
 # shellcheck source=/dev/null
 source "$_RALPH_LIB"
+
+# Source gate_command_extract from parsers.sh. ralph.sh now runs the
+# verification gate itself after BEAD_DONE (replacing the prior design
+# where the agent self-reported via `<gate-result>`), so we need the
+# single-source extractor the pre-push hook and bats suite also use.
+# Sourcing this file also makes a future edit to the extraction logic
+# land in all three callers at once.
+_RALPH_PARSERS="$_RALPH_SCRIPT_DIR/../hooks/parsers.sh"
+if [ ! -f "$_RALPH_PARSERS" ]; then
+  echo "Error: scripts/hooks/parsers.sh not found at $_RALPH_PARSERS"
+  _ralph_cleanup
+  return 1
+fi
+# shellcheck source=/dev/null
+source "$_RALPH_PARSERS"
+
+_RALPH_GATE_CMD=$(gate_command_extract "$_RALPH_PROJECT_ROOT/CLAUDE.md")
+if [ -z "$_RALPH_GATE_CMD" ]; then
+  echo "Error: no verification gate found under '## Verification Gate' in CLAUDE.md"
+  _ralph_cleanup
+  return 1
+fi
 
 # Retry tracking
 _RALPH_FAIL_COUNT=0
@@ -311,15 +334,28 @@ RETRY_EOF
     fi
   fi
 
-  # --- Gate result extraction ---
+  # --- Gate result (bash-run, not agent self-report) ---
+  # On BEAD_DONE, re-run the gate from bash and bind .last-gate-result to
+  # the real exit code. Replaces the prior design where the agent emitted
+  # `<gate-result>` and we grep-parsed the tag — a self-report the agent
+  # could skip, misquote, or hallucinate. See run_gate in lib.sh for the
+  # rationale and scripts/hooks/install.sh pre-push for the defense-in-
+  # depth re-run on push.
+  #
+  # On non-BEAD_DONE iterations (BLOCKED, REWORK, no-signal), clear the
+  # result file so a subsequent push does not trust a stale PASS from a
+  # prior iteration. The pre-push hook still runs the gate itself; this
+  # just removes a misleading informational artifact.
   _RALPH_GATE_RESULT="skipped"
-  if echo "$_RALPH_OUTPUT" | grep -q '<gate-result>PASS</gate-result>'; then
-    _RALPH_GATE_RESULT="PASS"
-  elif echo "$_RALPH_OUTPUT" | grep -q '<gate-result>FAIL</gate-result>'; then
-    _RALPH_GATE_RESULT="FAIL"
+  if [[ "$_RALPH_BEAD_DONE" == "true" ]]; then
+    if run_gate "$_RALPH_GATE_CMD" "$_RALPH_PROJECT_ROOT/.last-gate-result"; then
+      _RALPH_GATE_RESULT="PASS"
+    else
+      _RALPH_GATE_RESULT="FAIL"
+    fi
+  else
+    rm -f "$_RALPH_PROJECT_ROOT/.last-gate-result"
   fi
-
-  printf '%s\n' "$_RALPH_GATE_RESULT" > "$_RALPH_PROJECT_ROOT/.last-gate-result"
 
   # --- Confidence routing ---
   # parse_confidence_bead_done binds the confidence signal to the BEAD_DONE
