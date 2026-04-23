@@ -28,56 +28,121 @@ teardown() {
   rm -rf "$TMPDIR_TEST"
 }
 
-# --- parse_confidence ----------------------------------------------------
+# --- compute_confidence --------------------------------------------------
+#
+# Replaces the removed parse_confidence / parse_confidence_bead_done suite.
+# Those tests pinned the parser against agent-emitted `<confidence>` tags;
+# this suite pins the derivation against observable signals (gate result,
+# commit size, touched-paths, retry count). Each downgrade axis is covered
+# in isolation so a future edit that drops one can only pass by removing
+# the corresponding test — a visible deletion rather than a silent drift.
 
-@test "parse_confidence: matches HIGH emission" {
-  run parse_confidence 'some preamble <confidence level="HIGH">rationale</confidence> trailing'
-  [ "$status" -eq 0 ]
-  [ "$output" = "HIGH" ]
-}
-
-@test "parse_confidence: matches MEDIUM emission" {
-  run parse_confidence '<confidence level="MEDIUM">edge case uncertain</confidence>'
-  [ "$status" -eq 0 ]
-  [ "$output" = "MEDIUM" ]
-}
-
-@test "parse_confidence: matches LOW emission" {
-  run parse_confidence '<confidence level="LOW">partial criteria</confidence>'
+@test "compute_confidence: gate FAIL returns LOW regardless of other signals" {
+  # Terminal rule: a red gate forbids HIGH or MEDIUM no matter how clean
+  # everything else looks. If this regresses, compute_confidence becomes a
+  # proxy for diff-size rather than for bead outcome.
+  run compute_confidence "FAIL" 0 "false" "false" 0
   [ "$status" -eq 0 ]
   [ "$output" = "LOW" ]
 }
 
-@test "parse_confidence: returns empty when no confidence tag present" {
-  run parse_confidence 'output without any confidence signal at all'
+@test "compute_confidence: gate SKIPPED is treated as non-PASS (LOW)" {
+  # Three-valued .last-gate-result (PASS/FAIL/SKIPPED). SKIPPED means the
+  # gate extractor returned empty — unknown gate state. Fail closed to LOW
+  # rather than letting an unknown state auto-land.
+  run compute_confidence "SKIPPED" 0 "false" "false" 0
   [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$output" = "LOW" ]
 }
 
-@test "parse_confidence: does NOT match the prompt.md placeholder '<confidence level=\"HIGH|MEDIUM|LOW\">'" {
-  # scripts/ralph/prompt.md contains the literal placeholder string. If the
-  # agent echoes the prompt verbatim, the output contains the placeholder.
-  # The closing `>` anchor in each grep is what prevents the placeholder
-  # from accidentally satisfying the HIGH/MEDIUM/LOW branch. If a refactor
-  # ever drops the closing `>`, this test fires.
-  run parse_confidence 'the placeholder is <confidence level="HIGH|MEDIUM|LOW">rationale</confidence> and nothing else'
+@test "compute_confidence: empty gate result is treated as non-PASS (LOW)" {
+  # Defensive: if the caller forgets to pass gate_result, fall through to
+  # LOW. Preserves the "fail closed on unknown gate" property even against
+  # a programmer error at the call site.
+  run compute_confidence "" 0 "false" "false" 0
   [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$output" = "LOW" ]
 }
 
-@test "parse_confidence: HIGH takes precedence when multiple tags appear" {
-  # Documents the cascade: the grep tree checks HIGH → MEDIUM → LOW. If the
-  # agent emits more than one tag, HIGH wins. Flag-bearing behavior —
-  # worth pinning so a refactor does not flip the precedence.
-  run parse_confidence '<confidence level="LOW">oops</confidence> then <confidence level="HIGH">ok</confidence>'
+@test "compute_confidence: gate PASS with no downgrades returns HIGH" {
+  # Canonical happy path: green gate, small diff, no risky paths touched,
+  # no retries. This is the only configuration that auto-lands under
+  # 'auto-land: high', which is the shipped default for the template.
+  run compute_confidence "PASS" 100 "false" "false" 0
   [ "$status" -eq 0 ]
   [ "$output" = "HIGH" ]
 }
 
-@test "parse_confidence: is not fooled by an invalid level like 'HIGHEST'" {
-  run parse_confidence '<confidence level="HIGHEST">bogus</confidence>'
+@test "compute_confidence: PASS + retry_count>0 downgrades to MEDIUM" {
+  # Any prior failure on this bead is a "the agent struggled" signal.
+  # Even a clean final state earns less trust than a first-try success.
+  run compute_confidence "PASS" 100 "false" "false" 1
   [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$output" = "MEDIUM" ]
+}
+
+@test "compute_confidence: PASS + large diff downgrades to MEDIUM" {
+  # Diff-size threshold (currently 500 lines) is a heuristic for "enough
+  # surface area that a quiet regression could hide." The threshold itself
+  # is an implementation detail; what this test pins is that crossing it
+  # downgrades. If the threshold moves, update the number here.
+  run compute_confidence "PASS" 1000 "false" "false" 0
+  [ "$status" -eq 0 ]
+  [ "$output" = "MEDIUM" ]
+}
+
+@test "compute_confidence: PASS + diff exactly at threshold stays HIGH" {
+  # Boundary: the rule is strictly >500, not >=500. A 500-line commit is
+  # big but not in the "downgrade" class. Pinning the boundary so a future
+  # `>` vs `>=` flip is caught mechanically.
+  run compute_confidence "PASS" 500 "false" "false" 0
+  [ "$status" -eq 0 ]
+  [ "$output" = "HIGH" ]
+}
+
+@test "compute_confidence: PASS + touched scripts/hooks/ downgrades to MEDIUM" {
+  # Changing the enforcement mechanism is higher-risk than changing code
+  # that the enforcement mechanism judges. The downgrade enforces "the
+  # author of a hook change should expect human review."
+  run compute_confidence "PASS" 100 "true" "false" 0
+  [ "$status" -eq 0 ]
+  [ "$output" = "MEDIUM" ]
+}
+
+@test "compute_confidence: PASS + touched CLAUDE.md downgrades to MEDIUM" {
+  # CLAUDE.md is project rules and the gate command itself. A green gate
+  # against a CLAUDE.md edit is weaker evidence than a green gate against
+  # code, because the gate's own definition may have shifted in the diff.
+  run compute_confidence "PASS" 100 "false" "true" 0
+  [ "$status" -eq 0 ]
+  [ "$output" = "MEDIUM" ]
+}
+
+@test "compute_confidence: PASS + two downgrade axes collapse to LOW" {
+  # Two independent signals of "this deserves scrutiny" should not average
+  # out to MEDIUM. Each downgrade axis counts on its own; two axes mean LOW.
+  run compute_confidence "PASS" 1000 "true" "false" 0
+  [ "$status" -eq 0 ]
+  [ "$output" = "LOW" ]
+}
+
+@test "compute_confidence: PASS + three downgrade axes stay LOW (floor)" {
+  # Floor property: additional downgrade axes past two cannot push the
+  # verdict below LOW. Prevents a future axis addition from silently
+  # introducing a fourth level.
+  run compute_confidence "PASS" 1000 "true" "true" 2
+  [ "$status" -eq 0 ]
+  [ "$output" = "LOW" ]
+}
+
+@test "compute_confidence: defaults for omitted trailing args behave like zeros" {
+  # Callers may omit trailing args; the function defaults them to benign
+  # values (0 / false) so a programmer error truncating the call does not
+  # crash under `set -u` inside compute_confidence. PASS with no provided
+  # signals is HIGH — matches the all-clean path above.
+  run compute_confidence "PASS"
+  [ "$status" -eq 0 ]
+  [ "$output" = "HIGH" ]
 }
 
 # --- read_auto_land_policy ----------------------------------------------
@@ -356,90 +421,6 @@ EOF
     "$PROJECT_ROOT/scripts/ralph/lib.sh" "$input" "agent-template-6ij"
   [ "$status" -eq 0 ]
   [ "$output" = "agent-template-first" ]
-}
-
-# --- parse_confidence_bead_done -----------------------------------------
-
-@test "parse_confidence_bead_done: matches tag immediately before BEAD_DONE" {
-  input='<confidence level="HIGH">all criteria met</confidence><promise>BEAD_DONE</promise>'
-  run parse_confidence_bead_done "$input"
-  [ "$status" -eq 0 ]
-  [ "$output" = "HIGH" ]
-}
-
-@test "parse_confidence_bead_done: tolerates whitespace/newline between tag and promise" {
-  input='<confidence level="MEDIUM">edge case unclear</confidence>
-
-<promise>BEAD_DONE</promise>'
-  run parse_confidence_bead_done "$input"
-  [ "$status" -eq 0 ]
-  [ "$output" = "MEDIUM" ]
-}
-
-@test "parse_confidence_bead_done: rationale referencing OTHER levels does not spoof" {
-  # Adversarial case: the agent's rationale discusses a LOW signal earlier
-  # in the output, then emits the real HIGH tag immediately before
-  # BEAD_DONE. parse_confidence (legacy) would have returned HIGH only
-  # because of grep precedence — but the real contract is "the signal
-  # right before the promise wins." Binding the match to the promise is
-  # the falsifiable version of that contract.
-  input='First I thought <confidence level="LOW">partial</confidence> but on review
-everything holds.
-
-<confidence level="HIGH">all green</confidence>
-<promise>BEAD_DONE</promise>'
-  run parse_confidence_bead_done "$input"
-  [ "$status" -eq 0 ]
-  [ "$output" = "HIGH" ]
-}
-
-@test "parse_confidence_bead_done: reverse spoof attempt — HIGH mentioned first, LOW actual" {
-  # The opposite spoof: agent mentions HIGH in rationale, then emits LOW
-  # as the real signal. Legacy parse_confidence returned HIGH (precedence
-  # cascade); parse_confidence_bead_done returns LOW (the one actually
-  # attached to BEAD_DONE).
-  input='Earlier this looked <confidence level="HIGH">easy</confidence> but it turns out
-the test is only partial coverage.
-
-<confidence level="LOW">partial criteria met, workaround applied</confidence>
-<promise>BEAD_DONE</promise>'
-  run parse_confidence_bead_done "$input"
-  [ "$status" -eq 0 ]
-  [ "$output" = "LOW" ]
-}
-
-@test "parse_confidence_bead_done: returns empty when tag is not adjacent to BEAD_DONE" {
-  # Tag appears but BEAD_DONE is not the next thing. The caller must treat
-  # this as "no signal" rather than guess. Prevents a stray tag elsewhere
-  # in the output from routing on.
-  input='<confidence level="HIGH">looks ok</confidence>
-
-Now let me also mention that the failure-modes register has a new row.
-
-<promise>BEAD_DONE</promise>'
-  run parse_confidence_bead_done "$input"
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-}
-
-@test "parse_confidence_bead_done: returns empty when output contains no BEAD_DONE promise" {
-  input='<confidence level="HIGH">ok</confidence><promise>BLOCKED</promise><blocked-reason>x</blocked-reason>'
-  run parse_confidence_bead_done "$input"
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-}
-
-@test "parse_confidence_bead_done: ignores the unmatchable placeholder from prompt.md" {
-  # prompt.md's example uses "{ONE_OF_HIGH_MEDIUM_LOW}" as the placeholder,
-  # which is not a valid level. If the agent copy-pastes the example
-  # verbatim and emits BEAD_DONE right after, the parser must not route
-  # on it. Defense-in-depth: even if the BEAD_DONE anchor passes, the
-  # level must be one of HIGH/MEDIUM/LOW.
-  input='<confidence level="{ONE_OF_HIGH_MEDIUM_LOW}">rationale</confidence>
-<promise>BEAD_DONE</promise>'
-  run parse_confidence_bead_done "$input"
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
 }
 
 # --- run_gate ------------------------------------------------------------

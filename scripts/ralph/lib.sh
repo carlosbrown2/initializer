@@ -55,67 +55,69 @@ run_gate() {
   fi
 }
 
-# Extract confidence level from agent output.
+# Compute confidence from observable signals about the just-closed bead.
 #
-# Patterns require the closing `>` so the placeholder string
-# `<confidence level="{ONE_OF_HIGH_MEDIUM_LOW}">` in prompt.md does not
-# collide with a real emission and leak into the routing decision.
+# Replaces the prior parse_confidence / parse_confidence_bead_done pair
+# that extracted an agent-emitted `<confidence>` tag. The tag was a
+# self-grade: the model's prediction about how likely its work was to
+# survive the gate, not a measurement of that property. This function
+# reads the real signals (bash-observed gate result, commit diff size,
+# whether risky paths were touched, whether the bead needed retries) and
+# returns a deterministic verdict — reproducible, testable, not spoofable
+# by rationale text.
 #
-# HIGH precedence is documented in tests/hooks/ralph.bats. Note this is
-# the legacy extractor — it fires for any confidence tag anywhere in the
-# output. ralph.sh uses parse_confidence_bead_done (below) on the BEAD_DONE
-# path to prevent rationale text from spoofing the signal.
-parse_confidence() {
-  local output="$1"
-  if echo "$output" | grep -q '<confidence level="HIGH">'; then
-    echo "HIGH"
-  elif echo "$output" | grep -q '<confidence level="MEDIUM">'; then
-    echo "MEDIUM"
-  elif echo "$output" | grep -q '<confidence level="LOW">'; then
-    echo "LOW"
-  else
-    echo ""
-  fi
-}
+# Args (all passed as strings; numeric ones are compared with -gt):
+#   gate_result      — "PASS" auto-lands; anything else (FAIL, SKIPPED, "")
+#                      returns LOW immediately. Fail-closed: unknown gate
+#                      state is treated as red.
+#   diff_lines       — total lines added+deleted in the bead's commit
+#                      (git show --numstat HEAD summed). Defaults to 0 so
+#                      callers that forget to pass a value do not crash.
+#   touched_hooks    — "true" if the commit changed anything under
+#                      scripts/hooks/; else "false". Changing the
+#                      enforcement mechanism itself warrants more scrutiny.
+#   touched_claude_md — "true" if the commit changed CLAUDE.md; else
+#                      "false". Changing project rules warrants more scrutiny.
+#   retry_count      — fail_count going into this iteration. >0 means the
+#                      agent struggled on prior attempts — less confidence
+#                      that the final state is right.
+#
+# Verdict:
+#   gate != "PASS"   → LOW (terminal)
+#   otherwise start at HIGH and downgrade one level for each of:
+#     retry_count > 0
+#     diff_lines > 500
+#     touched_hooks == "true"
+#     touched_claude_md == "true"
+#   0 downgrades → HIGH; 1 → MEDIUM; 2+ → LOW.
+#
+# The 500-line threshold is a heuristic baseline — calibrate against this
+# repo's commit-size distribution in a follow-up bead if logs show signal
+# clustering on one side of the cut. The axes are kept narrow on purpose;
+# new downgrade axes should earn a bats test that covers them in isolation.
+compute_confidence() {
+  local gate_result="$1"
+  local diff_lines="${2:-0}"
+  local touched_hooks="${3:-false}"
+  local touched_claude_md="${4:-false}"
+  local retry_count="${5:-0}"
 
-# Extract the confidence level that IMMEDIATELY precedes <promise>BEAD_DONE</promise>.
-#
-# prompt.md's contract is "Emit immediately before <promise>BEAD_DONE</promise>".
-# Binding the extractor to that contract prevents rationale text like
-# "earlier I emitted <confidence level=\"LOW\"> but it should have been HIGH"
-# from spoofing the routing decision — only the final tag counts.
-#
-# Whitespace (including newlines) between the closing </confidence> and
-# the opening <promise>BEAD_DONE</promise> is tolerated. If no confidence
-# tag immediately precedes BEAD_DONE, returns empty (so the caller treats
-# it as "no signal" and logs accordingly, rather than silently using the
-# wrong level).
-parse_confidence_bead_done() {
-  local output="$1"
-  # Accumulate all input into a buffer and match in END. BWK awk (macOS
-  # default) silently ignores RS="\0" and falls back to per-line processing,
-  # which loses any match whose whitespace between </confidence> and
-  # <promise> spans a newline. Buffer-and-match-in-END is portable across
-  # gawk and BWK.
-  echo "$output" | awk '
-    { buf = buf $0 "\n" }
-    END {
-      # Capture level of the <confidence level="X"> that is followed only
-      # by whitespace and then <promise>BEAD_DONE</promise>. Because the
-      # pattern requires whitespace-only between the closing tag and the
-      # promise, the only tag that can match is the one immediately before.
-      if (match(buf, /<confidence level="(HIGH|MEDIUM|LOW)">[^<]*<\/confidence>[[:space:]]*<promise>BEAD_DONE<\/promise>/)) {
-        segment = substr(buf, RSTART, RLENGTH)
-        if (match(segment, /<confidence level="(HIGH|MEDIUM|LOW)">/)) {
-          tag = substr(segment, RSTART, RLENGTH)
-          # Pull the level out of the tag.
-          sub(/<confidence level="/, "", tag)
-          sub(/">/, "", tag)
-          print tag
-        }
-      }
-    }
-  '
+  if [[ "$gate_result" != "PASS" ]]; then
+    echo "LOW"
+    return 0
+  fi
+
+  local downgrades=0
+  [[ "$retry_count" -gt 0 ]] && downgrades=$((downgrades + 1))
+  [[ "$diff_lines" -gt 500 ]] && downgrades=$((downgrades + 1))
+  [[ "$touched_hooks" == "true" ]] && downgrades=$((downgrades + 1))
+  [[ "$touched_claude_md" == "true" ]] && downgrades=$((downgrades + 1))
+
+  case $downgrades in
+    0) echo "HIGH" ;;
+    1) echo "MEDIUM" ;;
+    *) echo "LOW" ;;
+  esac
 }
 
 # Read auto-land policy from CLAUDE.md ## Confidence Routing section.

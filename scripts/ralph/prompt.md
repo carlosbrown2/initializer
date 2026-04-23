@@ -17,9 +17,9 @@ Before you emit `BEAD_DONE`, all of the following must be true:
 2. The verification gate (single command from `CLAUDE.md`) is green. Run it yourself before emitting `BEAD_DONE` — `ralph.sh` will re-run it immediately after your exit and bind `.last-gate-result` to the real exit code. A BEAD_DONE emitted over a red gate is caught there (and again by the pre-push hook on push).
 3. `.current-bead-type` and `.current-bead-scope` (if it was set) have been removed.
 4. `scripts/ralph/archive.txt` has a new progress entry with the exact header `## YYYY-MM-DD HH:MM - <bead-id>` (the ralph loop's `archive_schema_check` verifies every BEAD_DONE iteration has a matching block — a missing block fails the next push).
-5. You emitted a `<confidence>` signal immediately followed by `<promise>BEAD_DONE</promise>`.
+5. You emitted `<promise>BEAD_DONE</promise>` as your exit signal.
 
-The bead-type-specific contracts below add further requirements per type. They do not replace these six.
+The bead-type-specific contracts below add further requirements per type. They do not replace these five.
 
 ## Iteration outcome contract
 
@@ -35,7 +35,6 @@ These are the states that must hold before you exit. Sequence the work however y
 - **The bead is closed in beads** and beads state is persisted.
 - **`scripts/ralph/archive.txt` has a new progress entry** with the required `## YYYY-MM-DD HH:MM - <bead-id>` header (see Progress report format below). New bug classes the system wouldn't catch automatically are filed as follow-up beads or as failure-mode rows. Reusable patterns also go in `scripts/ralph/patterns.md`.
 - **The marker files are absent** (`.current-bead-type` and `.current-bead-scope` removed).
-- **A `<confidence>` signal has been emitted immediately before `<promise>BEAD_DONE</promise>`.** Both are required, in that order. ralph.sh's `parse_confidence_bead_done` anchors the signal to the promise — a confidence tag anywhere else in your output (e.g. inside rationale text) will not be routed on.
 
 ## Bead-type contracts
 
@@ -90,23 +89,16 @@ Done when **all** of:
 - No source files were modified.
 - Commit message: `research: [bead-id] - <title>`.
 
-## Confidence signal (mandatory)
+## Confidence (bash-derived, not self-graded)
 
-Emit immediately before `<promise>BEAD_DONE</promise>`. Both are required — never emit `BEAD_DONE` without a confidence signal.
+You no longer emit a `<confidence>` tag. `ralph.sh` computes confidence from observable signals after you exit — gate result (bash-run), commit diff size, whether `scripts/hooks/` or `CLAUDE.md` was touched, and the iteration's retry count. The verdict (HIGH / MEDIUM / LOW) is fed to the `auto-land:` policy in `CLAUDE.md` exactly as before, but the routing input is now a measurement, not a prediction.
 
-The tag format is:
+Two practical consequences for how you do the work:
 
-```
-<confidence level="{ONE_OF_HIGH_MEDIUM_LOW}">One-line rationale</confidence>
-```
+- **Keep the diff focused.** Large commits downgrade confidence. Splitting work across beads is usually the right answer when the diff for one bead is drifting past the single-purpose boundary.
+- **If you change `scripts/hooks/` or `CLAUDE.md`, expect MEDIUM at best.** Those paths are the enforcement mechanism itself; the downgrade is intentional. Pair the change with the failure-mode / decision-register update that binds it.
 
-Replace `{ONE_OF_HIGH_MEDIUM_LOW}` with the actual level (`HIGH`, `MEDIUM`, or `LOW`). The placeholder token `{ONE_OF_HIGH_MEDIUM_LOW}` is deliberately not a valid level — if the agent echoes this example verbatim without substituting, `parse_confidence` returns empty rather than routing on a false match. This closes the "agent pasted the instruction as its answer" spoof.
-
-- **HIGH** — All acceptance criteria met, gate green, registers updated, no ambiguity. Auto-land allowed under `auto-land: all` and `auto-land: high`.
-- **MEDIUM** — Criteria met but with minor uncertainty (edge case coverage, spec interpretation). Pauses for human review unless policy is `auto-land: all`.
-- **LOW** — Significant uncertainty (partial criteria, workaround applied, retry-after-failure). Always pauses for human review.
-
-The parser requires the tag to immediately precede `<promise>BEAD_DONE</promise>`. Discussion of confidence levels earlier in your rationale will not be matched — only the final tag counts.
+`compute_confidence` (`scripts/ralph/lib.sh`) is the single source of truth for the verdict and is covered by `tests/hooks/ralph.bats`.
 
 ## Exit signals
 

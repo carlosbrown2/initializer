@@ -25,6 +25,9 @@ _ralph_cleanup() {
   unset _RALPH_BEAD_DONE _RALPH_BLOCKED_REASON _RALPH_REWORK_REASON
   unset _RALPH_PREREQ_BEAD _RALPH_BLOCKER_TITLE
   unset _RALPH_GATE_RESULT _RALPH_CONFIDENCE _RALPH_POLICY _RALPH_AUTO_LAND
+  unset _RALPH_FAIL_COUNT_AT_ITER_START
+  unset _RALPH_DIFF_LINES _RALPH_TOUCHED_HOOKS _RALPH_TOUCHED_CLAUDE_MD
+  unset _RALPH_HEAD_FILES
   unset _RALPH_FAILED_BEAD _RALPH_RETRY_STATE _RALPH_RETRY_REST _RALPH_RETRY_ACTION
   unset -f _ralph_cleanup _ralph_bead_in_progress _ralph_bead_ready _ralph_bead_title
 }
@@ -209,6 +212,13 @@ for _RALPH_I in $(seq 1 "$_RALPH_MAX_ITERATIONS"); do
     _RALPH_LAST_FAILED_BEAD=""
   fi
 
+  # Snapshot fail_count BEFORE any branch below can reset it. compute_confidence
+  # reads this value as its "retry_count" signal: the number of prior failures
+  # on this bead going into the iteration. If we read _RALPH_FAIL_COUNT after
+  # the BEAD_DONE branch (which sets it to 0), a bead that finally succeeded
+  # on its third attempt would look indistinguishable from a first-try success.
+  _RALPH_FAIL_COUNT_AT_ITER_START=$_RALPH_FAIL_COUNT
+
   # Write retry state file for the agent
   cat > "$_RALPH_RETRY_STATE_FILE" << RETRY_EOF
 {"fail_count": $_RALPH_FAIL_COUNT, "bead_id": "${_RALPH_LAST_FAILED_BEAD:-}", "iteration": $_RALPH_I}
@@ -357,16 +367,39 @@ RETRY_EOF
     rm -f "$_RALPH_PROJECT_ROOT/.last-gate-result"
   fi
 
-  # --- Confidence routing ---
-  # parse_confidence_bead_done binds the confidence signal to the BEAD_DONE
-  # exit so rationale text mentioning other confidence levels (e.g. "earlier
-  # I emitted LOW but upgraded to HIGH") cannot spoof the routing decision.
-  # Falls back to parse_confidence for BLOCKED/REWORK paths where no
-  # BEAD_DONE promise follows the signal.
+  # --- Confidence routing (derived from signals, not agent self-grade) ---
+  # compute_confidence (lib.sh) reads the observable outcome of this iteration
+  # and returns HIGH/MEDIUM/LOW deterministically. Replaces the prior
+  # parse_confidence / parse_confidence_bead_done pair that extracted an
+  # agent-emitted tag — a prediction the agent made about its work rather
+  # than a measurement of it. On non-BEAD_DONE iterations (BLOCKED, REWORK,
+  # no-signal) there is no committed work to grade, so confidence is left
+  # empty and the block below logs `confidence=NONE` without routing.
+  _RALPH_CONFIDENCE=""
   if [[ "$_RALPH_BEAD_DONE" == "true" ]]; then
-    _RALPH_CONFIDENCE=$(parse_confidence_bead_done "$_RALPH_OUTPUT")
-  else
-    _RALPH_CONFIDENCE=$(parse_confidence "$_RALPH_OUTPUT")
+    # Signals come from the bead's commit (HEAD). The agent is required to
+    # `bd close` and commit before emitting BEAD_DONE, so HEAD is this
+    # bead's work. git-show failures default to benign values so a missing
+    # git history (tests, early bootstrap) does not crash the loop.
+    _RALPH_DIFF_LINES=$(git -C "$_RALPH_PROJECT_ROOT" show --numstat HEAD 2>/dev/null \
+      | awk '{ s += $1 + $2 } END { print s + 0 }')
+    _RALPH_HEAD_FILES=$(git -C "$_RALPH_PROJECT_ROOT" show --name-only --pretty=format: HEAD 2>/dev/null || true)
+    if echo "$_RALPH_HEAD_FILES" | grep -q '^scripts/hooks/'; then
+      _RALPH_TOUCHED_HOOKS=true
+    else
+      _RALPH_TOUCHED_HOOKS=false
+    fi
+    if echo "$_RALPH_HEAD_FILES" | grep -qx 'CLAUDE.md'; then
+      _RALPH_TOUCHED_CLAUDE_MD=true
+    else
+      _RALPH_TOUCHED_CLAUDE_MD=false
+    fi
+    _RALPH_CONFIDENCE=$(compute_confidence \
+      "$_RALPH_GATE_RESULT" \
+      "$_RALPH_DIFF_LINES" \
+      "$_RALPH_TOUCHED_HOOKS" \
+      "$_RALPH_TOUCHED_CLAUDE_MD" \
+      "$_RALPH_FAIL_COUNT_AT_ITER_START")
   fi
   if [[ -n "$_RALPH_CONFIDENCE" ]]; then
     _RALPH_POLICY=$(read_auto_land_policy "$_RALPH_PROJECT_ROOT/CLAUDE.md")
