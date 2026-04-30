@@ -625,6 +625,167 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+# --- pattern_citation_check ----------------------------------------------
+
+@test "pattern_citation_check: accepts entry with path::symbol citation" {
+  cat > "$TMPDIR_TEST/CLAUDE.md" <<'EOF'
+## Discovered Patterns
+
+### Tagged with symbol citation
+model: claude-opus-4-7
+Body cites scripts/hooks/parsers.sh::pattern_citation_check.
+EOF
+  run pattern_citation_check "$TMPDIR_TEST/CLAUDE.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "pattern_citation_check: accepts entry with docs/failure-modes.md citation" {
+  cat > "$TMPDIR_TEST/CLAUDE.md" <<'EOF'
+## Discovered Patterns
+
+### Tagged with failure-mode register citation
+model: claude-opus-4-7
+Bind: see docs/failure-modes.md row "X".
+EOF
+  run pattern_citation_check "$TMPDIR_TEST/CLAUDE.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "pattern_citation_check: accepts entry with docs/decision-register.md citation" {
+  cat > "$TMPDIR_TEST/CLAUDE.md" <<'EOF'
+## Discovered Patterns
+
+### Tagged with decision-register citation
+model: claude-opus-4-7
+Bind: see docs/decision-register.md row "Y".
+EOF
+  run pattern_citation_check "$TMPDIR_TEST/CLAUDE.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "pattern_citation_check: accepts entry with tests/ reference" {
+  cat > "$TMPDIR_TEST/CLAUDE.md" <<'EOF'
+## Discovered Patterns
+
+### Tagged with tests/ reference
+model: claude-opus-4-7
+Body cites tests/hooks/parsers.bats as the binding test file.
+EOF
+  run pattern_citation_check "$TMPDIR_TEST/CLAUDE.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "pattern_citation_check: rejects entry with no citation" {
+  cat > "$TMPDIR_TEST/CLAUDE.md" <<'EOF'
+## Discovered Patterns
+
+### Tagged but uncited
+model: claude-opus-4-7
+Pure prose with no path token, no tests/ reference, no register mention.
+EOF
+  run pattern_citation_check "$TMPDIR_TEST/CLAUDE.md"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Tagged but uncited"* ]]
+}
+
+@test "pattern_citation_check: lists every uncited entry, not just the first" {
+  cat > "$TMPDIR_TEST/CLAUDE.md" <<'EOF'
+## Discovered Patterns
+
+### First uncited
+model: claude-opus-4-7
+no citation here
+
+### Second uncited
+model: claude-opus-4-7
+also no citation
+
+### Third uncited
+model: claude-opus-4-7
+still nothing
+EOF
+  run pattern_citation_check "$TMPDIR_TEST/CLAUDE.md"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"First uncited"* ]]
+  [[ "$output" == *"Second uncited"* ]]
+  [[ "$output" == *"Third uncited"* ]]
+}
+
+@test "pattern_citation_check: ignores entries outside ## Discovered Patterns section" {
+  cat > "$TMPDIR_TEST/CLAUDE.md" <<'EOF'
+## Architecture
+
+### Some component
+(no citation, but outside ## Discovered Patterns — should be ignored)
+
+## Discovered Patterns
+
+### Cited pattern
+model: claude-opus-4-7
+Body cites tests/hooks/parsers.bats.
+EOF
+  run pattern_citation_check "$TMPDIR_TEST/CLAUDE.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "pattern_citation_check: closes section on next ## heading (not a Discovered Patterns ###)" {
+  # An uncited ### that lives under a later ## heading must NOT be flagged.
+  cat > "$TMPDIR_TEST/CLAUDE.md" <<'EOF'
+## Discovered Patterns
+
+### Cited
+model: claude-opus-4-7
+Body cites tests/hooks/parsers.bats.
+
+## After Patterns
+
+### Not a pattern
+no citation here, but outside the section
+EOF
+  run pattern_citation_check "$TMPDIR_TEST/CLAUDE.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "pattern_citation_check: detects uncited entry at end of section (no trailing heading)" {
+  cat > "$TMPDIR_TEST/CLAUDE.md" <<'EOF'
+## Discovered Patterns
+
+### Dangling uncited pattern
+model: claude-opus-4-7
+no citation, no trailing heading
+EOF
+  run pattern_citation_check "$TMPDIR_TEST/CLAUDE.md"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Dangling uncited pattern"* ]]
+}
+
+@test "pattern_citation_check: prose-only mention of 'tests' (no slash) is not a citation" {
+  # Guard against false-accepting an entry that just says the word "tests" in
+  # prose without naming a path. Without this guard, the citation rule degrades
+  # to a vocabulary check.
+  cat > "$TMPDIR_TEST/CLAUDE.md" <<'EOF'
+## Discovered Patterns
+
+### Mentions tests in prose only
+model: claude-opus-4-7
+This entry talks about tests and registers without naming a path.
+EOF
+  run pattern_citation_check "$TMPDIR_TEST/CLAUDE.md"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Mentions tests in prose only"* ]]
+}
+
+@test "smoke: real CLAUDE.md passes pattern_citation_check (every ## Discovered Patterns entry cites a binding artifact)" {
+  run pattern_citation_check "$PROJECT_ROOT/CLAUDE.md"
+  [ "$status" -eq 0 ]
+}
+
 # --- rubric_edit_check ---------------------------------------------------
 
 @test "rubric_edit_check: rejects rubric still containing the starter disclaimer phrase" {

@@ -461,6 +461,79 @@ claude_model_tags_check() {
   return 0
 }
 
+# pattern_citation_check <claude-md-path>
+#
+# For every `### <title>` block under `## Discovered Patterns`, the body must
+# contain at least one of three citation forms binding the pattern to a
+# checked-in artifact:
+#   (a) `<dir>/<path>.<ext>::<symbol>` token (dir in the same canonical set
+#       used by fm_file_refs_check / dec_file_refs_check: tests, proofs,
+#       src, spec, docs, tasks, scripts, lib, pkg) — pins the pattern to a
+#       named symbol that register_symbol_refs_check would resolve if the
+#       same token appeared in a register;
+#   (b) `tests/...` path reference (with or without an extension) — pins
+#       the pattern to a test / fixture file;
+#   (c) `docs/failure-modes.md` or `docs/decision-register.md` mention —
+#       pins the pattern to a register row.
+#
+# Without this, the only structural rule on the pattern set is the 200-line
+# CLAUDE.md cap (a count bound, not a content bound — bytes can grow 4x while
+# line count stays flat). The pare-down test ("where is the bound?") applied
+# to ## Discovered Patterns itself.
+#
+# Section bounds match claude_model_tags_check: ## Discovered Patterns opens
+# the section, the next top-level `## ` (or EOF) closes it. Lines outside
+# the section are ignored.
+pattern_citation_check() {
+  local claude_md="$1"
+  local bad
+  bad=$(awk '
+    BEGIN { in_section = 0; current_entry = ""; current_line = 0; has_citation = 0 }
+    /^## Discovered Patterns/ {
+      in_section = 1
+      current_entry = ""
+      has_citation = 0
+      next
+    }
+    in_section && /^## / {
+      if (current_entry != "" && !has_citation) {
+        print current_line ": " current_entry
+      }
+      in_section = 0
+      next
+    }
+    in_section && /^### / {
+      if (current_entry != "" && !has_citation) {
+        print current_line ": " current_entry
+      }
+      current_entry = $0
+      current_line = NR
+      has_citation = 0
+      next
+    }
+    in_section && /(tests?|proofs|src|spec|docs|tasks|scripts|lib|pkg)\/[a-zA-Z0-9_\/.-]+\.[a-zA-Z0-9]+::[a-zA-Z0-9_]+/ {
+      has_citation = 1
+    }
+    in_section && /(^|[^a-zA-Z0-9_\/.-])tests\/[a-zA-Z0-9_][a-zA-Z0-9_\/.-]*/ {
+      has_citation = 1
+    }
+    in_section && /docs\/(failure-modes|decision-register)\.md/ {
+      has_citation = 1
+    }
+    END {
+      if (in_section && current_entry != "" && !has_citation) {
+        print current_line ": " current_entry
+      }
+    }
+  ' "$claude_md" 2>/dev/null) || true
+
+  if [ -n "$bad" ]; then
+    printf '%s\n' "$bad"
+    return 1
+  fi
+  return 0
+}
+
 # archive_schema_check <archive-path> <confidence-log-path>
 #
 # For every BEAD_DONE entry in confidence.log that names a real bead

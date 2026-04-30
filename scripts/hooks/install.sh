@@ -14,6 +14,7 @@
 #   9. Register symbol-refs validator
 #  10. Review artifact validator
 #  11. CLAUDE.md model-tag validator
+#  12. CLAUDE.md pattern-citation validator
 #
 # Also installed:
 #   commit-msg: enforces "<type>: [bead-id] - <title>" format on bead commits
@@ -458,6 +459,27 @@ if git diff --cached --name-only | grep -qx 'CLAUDE.md'; then
     echo "$bad_patterns" | awk '{print "    "$0}'
     exit 1
   fi
+
+  if ! uncited_patterns=$(pattern_citation_check "$PROJECT_ROOT/CLAUDE.md"); then
+    echo "BLOCKED: CLAUDE.md ## Discovered Patterns has entries without a binding citation."
+    echo ""
+    echo "  Every pattern under ## Discovered Patterns must cite a checked-in artifact"
+    echo "  so the pattern is bound to something a later reader can verify, not just to"
+    echo "  prose. Without this, ## Discovered Patterns has only a count bound (the"
+    echo "  200-line CLAUDE.md cap) and bytes can grow while line count stays flat."
+    echo ""
+    echo "  Accepted citation forms (any one suffices):"
+    echo "    <dir>/<path>.<ext>::<symbol>      — symbol-resolvable citation, e.g."
+    echo "                                          scripts/hooks/parsers.sh::FOO"
+    echo "    tests/...                          — test / fixture path, e.g."
+    echo "                                          tests/hooks/parsers.bats"
+    echo "    docs/failure-modes.md              — failure-mode register row mention"
+    echo "    docs/decision-register.md          — decision-register row mention"
+    echo ""
+    echo "  Offending entries (line: heading):"
+    echo "$uncited_patterns" | awk '{print "    "$0}'
+    exit 1
+  fi
 fi
 
 exit 0
@@ -622,6 +644,7 @@ echo "  - Pre-commit: Register symbol-refs validator (active — rejects <path>:
 echo "  - Pre-commit: Review/research bead write protection (active — fires only if .current-bead-type=review|research)"
 echo "  - Pre-commit: Review artifact validator (active — fires only if .current-bead-type=review and review files are staged)"
 echo "  - Pre-commit: CLAUDE.md model-tag validator (active — fires only if CLAUDE.md is staged)"
+echo "  - Pre-commit: CLAUDE.md pattern-citation validator (active — fires only if CLAUDE.md is staged; rejects ## Discovered Patterns entries with no path::symbol / tests/ / docs/{failure-modes,decision-register}.md citation)"
 echo "  - Pre-commit: CLAUDE.md size guard (active)"
 echo "  - Pre-commit: Dependency hallucination check (commented out — uncomment after installing dep-hallucinator)"
 echo "  - Commit-msg: Format validation (active — [bead-id] - <title> enforced for bead commits)"
