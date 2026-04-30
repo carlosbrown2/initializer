@@ -22,6 +22,7 @@ _ralph_cleanup() {
   unset _RALPH_FAIL_COUNT _RALPH_LAST_FAILED_BEAD _RALPH_MAX_RETRIES
   unset _RALPH_I _RALPH_CURRENT_BEAD _RALPH_ACTIVE_BEAD
   unset _RALPH_BEAD_ID _RALPH_BEAD_TITLE _RALPH_OUTPUT
+  unset _RALPH_BEAD_TYPE _RALPH_BEAD_DESCRIPTION _RALPH_COMPLETED_SUMMARY
   unset _RALPH_BEAD_DONE _RALPH_BLOCKED_REASON _RALPH_REWORK_REASON
   unset _RALPH_PREREQ_BEAD _RALPH_BLOCKER_TITLE
   unset _RALPH_GATE_RESULT _RALPH_CONFIDENCE _RALPH_POLICY _RALPH_AUTO_LAND
@@ -32,6 +33,7 @@ _ralph_cleanup() {
   unset _RALPH_STALE_HEAD _RALPH_STALE_HEAD_FIELD
   unset _RALPH_FAILED_BEAD _RALPH_RETRY_STATE _RALPH_RETRY_REST _RALPH_RETRY_ACTION
   unset -f _ralph_cleanup _ralph_bead_in_progress _ralph_bead_ready _ralph_bead_title
+  unset -f _ralph_load_bead_meta _ralph_sanitize_log_field
 }
 
 # --- Bead id extractors ----------------------------------------------------
@@ -57,15 +59,60 @@ _ralph_bead_ready() {
 
 _ralph_bead_title() {
   local id="$1"
-  # `bd show` line 2 format is brittle. Prefer --json if the installed bd
-  # supports it; fall back to the legacy line-2 parse with a safety belt
-  # that returns empty rather than a half-parsed title if the format drifts.
+  # Prefer --json; fall back to the brittle line-2 parse if bd lacks JSON.
+  # jq path normalizes bd <0.49 (object) and bd >=0.49 (array-of-one) so a
+  # version bump does not silently empty the title.
   local j
   if j=$(bd show "$id" --json 2>/dev/null) && [ -n "$j" ]; then
-    jq -r '.title // empty' <<<"$j" 2>/dev/null
+    jq -r '(if type == "array" then .[0] else . end).title // empty' <<<"$j" 2>/dev/null
     return 0
   fi
   bd show "$id" 2>/dev/null | sed -n '2p' | sed 's/^[^·]*· //' | sed 's/  *\[●.*//'
+}
+
+# Hydrate _RALPH_BEAD_TYPE / _RALPH_BEAD_TITLE / _RALPH_BEAD_DESCRIPTION
+# from a single `bd show <id> --json` call (three separate calls would
+# triple per-iter shell-out cost on a slow bd). Type is the logical loop
+# taxonomy parsed from the title prefix; falls back to bd's `.issue_type`
+# when no impl/review/pare/compound/research keyword matches.
+_ralph_load_bead_meta() {
+  local id="$1"
+  _RALPH_BEAD_TYPE=""
+  _RALPH_BEAD_TITLE=""
+  _RALPH_BEAD_DESCRIPTION=""
+  local j issue_type
+  j=$(bd show "$id" --json 2>/dev/null) || return 0
+  [ -n "$j" ] || return 0
+  _RALPH_BEAD_TITLE=$(jq -r '(if type == "array" then .[0] else . end).title // empty' <<<"$j" 2>/dev/null) || _RALPH_BEAD_TITLE=""
+  _RALPH_BEAD_DESCRIPTION=$(jq -r '(if type == "array" then .[0] else . end).description // empty' <<<"$j" 2>/dev/null) || _RALPH_BEAD_DESCRIPTION=""
+  issue_type=$(jq -r '(if type == "array" then .[0] else . end).issue_type // empty' <<<"$j" 2>/dev/null) || issue_type=""
+  if [[ "$_RALPH_BEAD_TITLE" =~ (^|[[:space:]])(impl|review|pare|pare-down|compound|research)[[:space:]]*: ]]; then
+    _RALPH_BEAD_TYPE="${BASH_REMATCH[2]}"
+  else
+    _RALPH_BEAD_TYPE="$issue_type"
+  fi
+}
+
+# Normalize free-form text (titles, commit subjects, descriptions) for the
+# confidence.log line. Collapses whitespace, replaces `"` with `'` so the
+# value is safe inside the surrounding double quotes, truncates at 160
+# chars with `...` so a long description does not push real fields out of
+# view. The line-oriented parsers in scripts/hooks/parsers.sh would
+# silently corrupt their output on a smuggled newline.
+_ralph_sanitize_log_field() {
+  local s="$1"
+  # tr pipeline (not parameter expansion) — bash's `${s//\"/'}` form is not
+  # parseable because the `'` opens a string the parser cannot match.
+  # First tr: whitespace → space. Second tr: `"` → `'` (so the value is
+  # safe inside the surrounding `title="…"` log field). Third tr: squeeze
+  # adjacent spaces so multi-line input collapses to a clean token-stream.
+  s=$(printf '%s' "$s" | tr '[:space:]' ' ' | tr '"' "'" | tr -s ' ')
+  s="${s# }"
+  s="${s% }"
+  if [ "${#s}" -gt 160 ]; then
+    s="${s:0:157}..."
+  fi
+  printf '%s' "$s"
 }
 
 # --- Dependency checks ---
@@ -226,20 +273,26 @@ for _RALPH_I in $(seq 1 "$_RALPH_MAX_ITERATIONS"); do
 RETRY_EOF
 
   # --- Show upcoming work ---
+  # Hydrate type/title/description from a single bd show call so the banner,
+  # the confidence.log line, and the iteration footer all read from the same
+  # snapshot. _RALPH_BEAD_ID is set from either the resumed in-progress bead
+  # or _ralph_bead_ready so it always names the bead the agent will work on.
   _RALPH_BEAD_ID=""
   _RALPH_BEAD_TITLE=""
+  _RALPH_BEAD_TYPE=""
+  _RALPH_BEAD_DESCRIPTION=""
+  _RALPH_COMPLETED_SUMMARY=""
   if [[ -n "$_RALPH_ACTIVE_BEAD" ]]; then
     _RALPH_BEAD_ID="$_RALPH_ACTIVE_BEAD"
-    _RALPH_BEAD_TITLE=$(_ralph_bead_title "$_RALPH_BEAD_ID")
-    echo "Resuming: $_RALPH_BEAD_ID — $_RALPH_BEAD_TITLE"
   else
     _RALPH_BEAD_ID=$(_ralph_bead_ready)
-    if [[ -n "$_RALPH_BEAD_ID" ]]; then
-      _RALPH_BEAD_TITLE=$(_ralph_bead_title "$_RALPH_BEAD_ID")
-      echo "Current bead: $_RALPH_BEAD_ID — $_RALPH_BEAD_TITLE"
-    else
-      echo "No beads ready — agent will check and emit COMPLETE."
-    fi
+  fi
+  if [[ -n "$_RALPH_BEAD_ID" ]]; then
+    _ralph_load_bead_meta "$_RALPH_BEAD_ID"
+    echo "[$_RALPH_BEAD_TYPE] — $_RALPH_BEAD_TITLE"
+    [[ -n "$_RALPH_BEAD_DESCRIPTION" ]] && echo "Description: $_RALPH_BEAD_DESCRIPTION"
+  else
+    echo "No beads ready — agent will check and emit COMPLETE."
   fi
   echo "---------------------------------------------------------------"
 
@@ -291,8 +344,14 @@ RETRY_EOF
     _RALPH_HEAD_AT_BEAD_DONE=$(git -C "$_RALPH_PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo "")
     if compute_head_unchanged_for_bead_done "$_RALPH_HEAD_AT_ITER_START" "$_RALPH_HEAD_AT_BEAD_DONE"; then
       _RALPH_STALE_HEAD=true
+      # Stale-HEAD: HEAD did not move, so `git log -1 --pretty=%s` would
+      # return the *prior* bead's subject — exactly the cross-bead
+      # contamination the stale-HEAD detector exists to flag. Replace with
+      # the marker so the log line carries the diagnosis, not the wrong work.
+      _RALPH_COMPLETED_SUMMARY="(no new commit — stale HEAD)"
       echo "Stale HEAD detected: BEAD_DONE emitted at iteration $_RALPH_I without a new commit."
     else
+      _RALPH_COMPLETED_SUMMARY=$(git -C "$_RALPH_PROJECT_ROOT" log -1 --pretty=%s 2>/dev/null || echo "")
       echo "Bead completed successfully at iteration $_RALPH_I."
     fi
 
@@ -309,7 +368,7 @@ RETRY_EOF
       echo "  Unclaimed $_RALPH_ACTIVE_BEAD and filed blocker bead."
     fi
 
-    echo "[$(date -Iseconds)] iter=$_RALPH_I BLOCKED bead=${_RALPH_ACTIVE_BEAD:-unknown} reason=$_RALPH_BLOCKED_REASON" >> "$_RALPH_CONFIDENCE_LOG"
+    echo "[$(date -Iseconds)] iter=$_RALPH_I BLOCKED bead=${_RALPH_ACTIVE_BEAD:-unknown} bead_type=$_RALPH_BEAD_TYPE reason=$_RALPH_BLOCKED_REASON title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\"" >> "$_RALPH_CONFIDENCE_LOG"
     _RALPH_FAIL_COUNT=0
     _RALPH_LAST_FAILED_BEAD=""
     rm -f "$_RALPH_RETRY_STATE_FILE"
@@ -331,7 +390,7 @@ RETRY_EOF
       echo "  Unclaimed $_RALPH_ACTIVE_BEAD pending rework."
     fi
 
-    echo "[$(date -Iseconds)] iter=$_RALPH_I REWORK bead=${_RALPH_ACTIVE_BEAD:-unknown} reason=$_RALPH_REWORK_REASON" >> "$_RALPH_CONFIDENCE_LOG"
+    echo "[$(date -Iseconds)] iter=$_RALPH_I REWORK bead=${_RALPH_ACTIVE_BEAD:-unknown} bead_type=$_RALPH_BEAD_TYPE reason=$_RALPH_REWORK_REASON title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\"" >> "$_RALPH_CONFIDENCE_LOG"
     _RALPH_FAIL_COUNT=0
     _RALPH_LAST_FAILED_BEAD=""
     rm -f "$_RALPH_RETRY_STATE_FILE"
@@ -359,7 +418,7 @@ RETRY_EOF
         _RALPH_BLOCKER_TITLE="BLOCKED: $_RALPH_FAILED_BEAD failed $_RALPH_FAIL_COUNT times — needs manual investigation"
         bd create --title="$_RALPH_BLOCKER_TITLE" --type=bug --priority=1 2>/dev/null || true
 
-        echo "[$(date -Iseconds)] iter=$_RALPH_I ESCALATION bead=$_RALPH_FAILED_BEAD fail_count=$_RALPH_FAIL_COUNT" >> "$_RALPH_CONFIDENCE_LOG"
+        echo "[$(date -Iseconds)] iter=$_RALPH_I ESCALATION bead=$_RALPH_FAILED_BEAD bead_type=$_RALPH_BEAD_TYPE fail_count=$_RALPH_FAIL_COUNT title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\"" >> "$_RALPH_CONFIDENCE_LOG"
 
         _RALPH_FAIL_COUNT=0
         _RALPH_LAST_FAILED_BEAD=""
@@ -459,7 +518,7 @@ RETRY_EOF
     # _RALPH_BEAD_ID is set at the iter top from either the resumed
     # _RALPH_ACTIVE_BEAD or _ralph_bead_ready, so it always names the bead
     # the agent will work on. Same fix in the confidence=NONE branch below.
-    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT${_RALPH_STALE_HEAD_FIELD}" >> "$_RALPH_CONFIDENCE_LOG"
+    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_type=$_RALPH_BEAD_TYPE bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT${_RALPH_STALE_HEAD_FIELD} title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\" completed=\"$(_ralph_sanitize_log_field "$_RALPH_COMPLETED_SUMMARY")\"" >> "$_RALPH_CONFIDENCE_LOG"
 
     if [[ "$_RALPH_AUTO_LAND" == "true" ]]; then
       echo "Auto-land: confidence=$_RALPH_CONFIDENCE, policy=$_RALPH_POLICY"
@@ -469,9 +528,18 @@ RETRY_EOF
       read -r
     fi
   else
-    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_done=$_RALPH_BEAD_DONE confidence=NONE (no signal detected) gate_result=$_RALPH_GATE_RESULT${_RALPH_STALE_HEAD_FIELD}" >> "$_RALPH_CONFIDENCE_LOG"
+    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_type=$_RALPH_BEAD_TYPE bead_done=$_RALPH_BEAD_DONE confidence=NONE (no signal detected) gate_result=$_RALPH_GATE_RESULT${_RALPH_STALE_HEAD_FIELD} title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\" completed=\"$(_ralph_sanitize_log_field "$_RALPH_COMPLETED_SUMMARY")\"" >> "$_RALPH_CONFIDENCE_LOG"
   fi
 
+  # Footer: bead context + commit subject. Gated on _RALPH_COMPLETED_SUMMARY
+  # non-empty so non-BEAD_DONE iters (BLOCKED / REWORK / no-signal) do not
+  # print a duplicate "Resuming"-shape line — those branches already echoed
+  # their own status above. On stale-HEAD iters the summary carries the
+  # "(no new commit — stale HEAD)" marker so the audit reads correctly.
+  if [[ -n "$_RALPH_COMPLETED_SUMMARY" ]]; then
+    echo "  $_RALPH_BEAD_ID [$_RALPH_BEAD_TYPE] — $_RALPH_BEAD_TITLE"
+    echo "  Completed: $_RALPH_COMPLETED_SUMMARY"
+  fi
   echo "Iteration $_RALPH_I complete. Continuing..."
   sleep 2
 done

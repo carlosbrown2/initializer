@@ -962,6 +962,405 @@ EOF
   [[ "$emitted" != *"bead=unknown"* ]] || { echo "Got: $emitted"; return 1; }
 }
 
+# --- _ralph_load_bead_meta + _ralph_sanitize_log_field -----------------
+#
+# Bead agent-template-d92: ralph.sh hydrates bead type/title/description
+# from a single `bd show <id> --json` call so the banner, the confidence.log
+# line, and the iteration footer all share one snapshot. The jq path
+# normalizes bd <0.49 (object) and bd >=0.49 (array-of-one) responses so a
+# version bump does not silently empty the title (the prior `_ralph_bead_title`
+# bug). The sanitizer keeps free-form text from breaking the line-oriented
+# parsers in scripts/hooks/parsers.sh.
+#
+# These helpers live in ralph.sh (not lib.sh) — ralph.sh is meant to be
+# sourced and runs the agent loop, so we extract the function definitions
+# via awk and eval them in isolation. Same shape used by the existing
+# stale-HEAD / log-emit tests above.
+
+_load_ralph_helpers() {
+  local fns
+  fns=$(awk '
+    /^[a-zA-Z_][a-zA-Z0-9_]*\(\)[[:space:]]*\{[[:space:]]*$/ { in_fn=1; print; next }
+    in_fn && /^\}[[:space:]]*$/ { in_fn=0; print; next }
+    in_fn { print }
+  ' "$PROJECT_ROOT/scripts/ralph/ralph.sh")
+  eval "$fns"
+}
+
+_install_bd_stub() {
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/bd" <<EOF
+#!/bin/bash
+cat <<'BD_JSON'
+$1
+BD_JSON
+EOF
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+}
+
+@test "_ralph_sanitize_log_field: plain text passes through unchanged" {
+  _load_ralph_helpers
+  run _ralph_sanitize_log_field "hello world"
+  [ "$status" -eq 0 ]
+  [ "$output" = "hello world" ]
+}
+
+@test "_ralph_sanitize_log_field: collapses tabs and newlines to a single space" {
+  # Multi-line / tab-bearing titles or commit subjects must not break the
+  # line-oriented confidence.log. tr+squeeze keeps the field as one token-
+  # stream the awk-style parsers in scripts/hooks/parsers.sh can read.
+  _load_ralph_helpers
+  run _ralph_sanitize_log_field $'foo\tbar\n  baz'
+  [ "$status" -eq 0 ]
+  [ "$output" = "foo bar baz" ]
+}
+
+@test "_ralph_sanitize_log_field: replaces double quotes with single quotes" {
+  # The value lives inside title=\"...\" / completed=\"...\" in the log line.
+  # An embedded `"` would close the field early and corrupt every following
+  # field — the sanitizer downgrades it to `'` so the surrounding quotes hold.
+  _load_ralph_helpers
+  run _ralph_sanitize_log_field 'with "embedded" quotes'
+  [ "$status" -eq 0 ]
+  [ "$output" = "with 'embedded' quotes" ]
+}
+
+@test "_ralph_sanitize_log_field: truncates strings over 160 chars with ... marker" {
+  # Long descriptions otherwise push real fields off the visible end of an
+  # awk view. 160 + ellipsis is the working limit; the truncation point is
+  # 157 + "..." so total stays at 160.
+  _load_ralph_helpers
+  longstr=$(printf 'x%.0s' {1..200})
+  run _ralph_sanitize_log_field "$longstr"
+  [ "$status" -eq 0 ]
+  [ "${#output}" -eq 160 ]
+  [[ "$output" == *"..." ]] || { echo "missing ... marker: $output"; return 1; }
+}
+
+@test "_ralph_sanitize_log_field: 160-char string at the boundary stays unchanged" {
+  # Boundary pin: 160 stays as-is; 161 truncates. A `>` vs `>=` flip would
+  # silently shift the cut by one char.
+  _load_ralph_helpers
+  exact=$(printf 'a%.0s' {1..160})
+  run _ralph_sanitize_log_field "$exact"
+  [ "$status" -eq 0 ]
+  [ "${#output}" -eq 160 ]
+  [[ "$output" != *"..." ]] || { echo "spurious ... marker: $output"; return 1; }
+}
+
+@test "_ralph_sanitize_log_field: empty input returns empty" {
+  _load_ralph_helpers
+  run _ralph_sanitize_log_field ""
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "_ralph_load_bead_meta: object response (bd <0.49) populates type/title/desc" {
+  # The pre-0.49 shape — `bd show <id> --json` returns a JSON object.
+  _load_ralph_helpers
+  _install_bd_stub '{"title":"impl: foo bar","description":"do the thing","issue_type":"task"}'
+  _ralph_load_bead_meta "any-id"
+  [ "$_RALPH_BEAD_TITLE" = "impl: foo bar" ]
+  [ "$_RALPH_BEAD_DESCRIPTION" = "do the thing" ]
+  [ "$_RALPH_BEAD_TYPE" = "impl" ]
+}
+
+@test "_ralph_load_bead_meta: array-of-one response (bd >=0.49) populates type/title/desc" {
+  # The post-0.49 shape — bd returns an array. Without the (if type==array)
+  # guard, jq errored "Cannot index array with string" and silently emptied
+  # the title (the bug this bead replaces).
+  _load_ralph_helpers
+  _install_bd_stub '[{"title":"review: audit foo","description":"R","issue_type":"task"}]'
+  _ralph_load_bead_meta "any-id"
+  [ "$_RALPH_BEAD_TITLE" = "review: audit foo" ]
+  [ "$_RALPH_BEAD_DESCRIPTION" = "R" ]
+  [ "$_RALPH_BEAD_TYPE" = "review" ]
+}
+
+@test "_ralph_load_bead_meta: every loop-taxonomy keyword resolves from the title" {
+  # Pin every accepted prefix in the regex (impl/review/pare/pare-down/
+  # compound/research). A future drop of one would silently fall through
+  # to .issue_type — which uniformly returns 'task' in this repo's flow.
+  _load_ralph_helpers
+  for kw in impl review pare pare-down compound research; do
+    _install_bd_stub "{\"title\":\"$kw: thing\",\"description\":\"\",\"issue_type\":\"task\"}"
+    _ralph_load_bead_meta "any-id"
+    [ "$_RALPH_BEAD_TYPE" = "$kw" ] || { echo "kw=$kw got=$_RALPH_BEAD_TYPE"; return 1; }
+  done
+}
+
+@test "_ralph_load_bead_meta: title without a keyword falls back to .issue_type" {
+  # Unconventional / legacy titles (no `<keyword>:` prefix) still need a
+  # type to display. bd's CLI taxonomy is the documented fallback.
+  _load_ralph_helpers
+  _install_bd_stub '{"title":"banana fix","description":"X","issue_type":"bug"}'
+  _ralph_load_bead_meta "any-id"
+  [ "$_RALPH_BEAD_TYPE" = "bug" ]
+}
+
+@test "_ralph_load_bead_meta: empty bd output leaves globals empty (no crash)" {
+  # bd missing or returning empty must not crash the loop under set -u.
+  # Globals stay empty; banner gracefully prints `[] — ` with no Description.
+  _load_ralph_helpers
+  mkdir -p "$TMPDIR_TEST/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$TMPDIR_TEST/bin/bd"
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+  _ralph_load_bead_meta "any-id"
+  [ -z "$_RALPH_BEAD_TITLE" ]
+  [ -z "$_RALPH_BEAD_DESCRIPTION" ]
+  [ -z "$_RALPH_BEAD_TYPE" ]
+}
+
+# --- ralph.sh banner shape ---------------------------------------------
+
+@test "ralph.sh banner prints [type] — title and Description line" {
+  # Extract the banner block (# --- Show upcoming work --- through the
+  # divider line) and eval it under hydrated globals. The bead description
+  # mandates `[type] — title` on its own line and `Description: <desc>` as
+  # a separate line so the operator sees the bead's contract pre-run.
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*# --- Show upcoming work/ { capture=1 }
+    capture && /^[[:space:]]*echo "---/ { print; exit }
+    capture { print }
+  ' "$ralph")
+  [ -n "$block" ]
+
+  # Stub the helpers we depend on; eval the block under controlled state.
+  _ralph_load_bead_meta() {
+    _RALPH_BEAD_TYPE="impl"
+    _RALPH_BEAD_TITLE="impl: foo"
+    _RALPH_BEAD_DESCRIPTION="some description"
+  }
+  _ralph_bead_ready() { echo "agent-template-xyz"; }
+  _RALPH_ACTIVE_BEAD=""
+
+  out=$(eval "$block")
+  [[ "$out" == *"[impl] — impl: foo"* ]] || { echo "Got: $out"; return 1; }
+  [[ "$out" == *"Description: some description"* ]] || { echo "Got: $out"; return 1; }
+}
+
+@test "ralph.sh banner omits Description line when description is empty" {
+  # Pin that an empty description does not print a bare `Description:` line —
+  # the gating is `[[ -n "$_RALPH_BEAD_DESCRIPTION" ]]`.
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*# --- Show upcoming work/ { capture=1 }
+    capture && /^[[:space:]]*echo "---/ { print; exit }
+    capture { print }
+  ' "$ralph")
+
+  _ralph_load_bead_meta() {
+    _RALPH_BEAD_TYPE="impl"
+    _RALPH_BEAD_TITLE="impl: foo"
+    _RALPH_BEAD_DESCRIPTION=""
+  }
+  _ralph_bead_ready() { echo "agent-template-xyz"; }
+  _RALPH_ACTIVE_BEAD=""
+
+  out=$(eval "$block")
+  [[ "$out" == *"[impl] — impl: foo"* ]]
+  [[ "$out" != *"Description:"* ]] || { echo "spurious Description line: $out"; return 1; }
+}
+
+# --- ralph.sh confidence.log fields per branch -------------------------
+#
+# Five log echo points — BLOCKED, REWORK, ESCALATION, BEAD_DONE-with-
+# confidence, BEAD_DONE-without-confidence — each gain bead_type=$type and
+# title="<sanitized>". The two BEAD_DONE branches additionally gain
+# completed="<sanitized>". Tests extract the live source line and eval it
+# so a regression to the old field set surfaces here even if the line's
+# shape moves.
+
+@test "ralph.sh BLOCKED log line carries bead_type and sanitized title" {
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*BLOCKED bead=/ { print; exit }' "$ralph")
+  [ -n "$log_line" ]
+
+  _ralph_sanitize_log_field() { printf '%s' "$1"; }
+  _RALPH_I=1
+  _RALPH_ACTIVE_BEAD="agent-template-xyz"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: do the thing"
+  _RALPH_BLOCKED_REASON="missing dep"
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+  eval "$log_line"
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"bead_type=impl"* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *'title="impl: do the thing"'* ]] || { echo "Got: $emitted"; return 1; }
+}
+
+@test "ralph.sh REWORK log line carries bead_type and sanitized title" {
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*REWORK bead=/ { print; exit }' "$ralph")
+  [ -n "$log_line" ]
+
+  _ralph_sanitize_log_field() { printf '%s' "$1"; }
+  _RALPH_I=1
+  _RALPH_ACTIVE_BEAD="agent-template-xyz"
+  _RALPH_BEAD_TYPE="review"
+  _RALPH_BEAD_TITLE="review: audit foo"
+  _RALPH_REWORK_REASON="prereq incomplete"
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+  eval "$log_line"
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"bead_type=review"* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *'title="review: audit foo"'* ]] || { echo "Got: $emitted"; return 1; }
+}
+
+@test "ralph.sh ESCALATION log line carries bead_type and sanitized title" {
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*ESCALATION bead=/ { print; exit }' "$ralph")
+  [ -n "$log_line" ]
+
+  _ralph_sanitize_log_field() { printf '%s' "$1"; }
+  _RALPH_I=1
+  _RALPH_FAILED_BEAD="agent-template-xyz"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: do the thing"
+  _RALPH_FAIL_COUNT=3
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+  eval "$log_line"
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"bead_type=impl"* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *'title="impl: do the thing"'* ]] || { echo "Got: $emitted"; return 1; }
+}
+
+@test "ralph.sh BEAD_DONE auto-land log line carries bead_type, title, and completed" {
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*auto_land=\$_RALPH_AUTO_LAND/ { print; exit }' "$ralph")
+  [ -n "$log_line" ]
+
+  _ralph_sanitize_log_field() { printf '%s' "$1"; }
+  _RALPH_I=1
+  _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: do the thing"
+  _RALPH_BEAD_DONE=true
+  _RALPH_CONFIDENCE="HIGH"
+  _RALPH_POLICY="all"
+  _RALPH_AUTO_LAND="true"
+  _RALPH_GATE_RESULT="PASS"
+  _RALPH_STALE_HEAD_FIELD=""
+  _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+  eval "$log_line"
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"bead_type=impl"* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *'title="impl: do the thing"'* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *'completed="feat: [agent-template-xyz] - did the thing"'* ]] || { echo "Got: $emitted"; return 1; }
+}
+
+@test "ralph.sh BEAD_DONE confidence=NONE log line carries bead_type, title, and completed" {
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*confidence=NONE/ { print; exit }' "$ralph")
+  [ -n "$log_line" ]
+
+  _ralph_sanitize_log_field() { printf '%s' "$1"; }
+  _RALPH_I=1
+  _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: do the thing"
+  _RALPH_BEAD_DONE=true
+  _RALPH_GATE_RESULT="PASS"
+  _RALPH_STALE_HEAD_FIELD=""
+  _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+  eval "$log_line"
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"bead_type=impl"* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *'title="impl: do the thing"'* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *'completed="feat: [agent-template-xyz] - did the thing"'* ]] || { echo "Got: $emitted"; return 1; }
+}
+
+@test "archive_schema_check still extracts bead id when bead_type field is also present" {
+  # Backward-compat invariant: archive_schema_check uses `grep -oE 'bead=[^ ]+'`
+  # to extract the bead id from confidence.log. The new `bead_type=<word>`
+  # field starts with a different token (`bead_type=`, not `bead=`) so the
+  # regex must not match it. A regression that drops the trailing `=` from
+  # the regex (e.g. `bead[^ ]+`) would silently match `bead_type=...` and
+  # try to look up `type=impl` in archive.txt — which would always fail.
+  # shellcheck source=/dev/null
+  source "$PROJECT_ROOT/scripts/hooks/parsers.sh"
+  cd "$TMPDIR_TEST"
+  cat > confidence.log <<'EOF'
+[2026-04-30T12:00:00] iter=1 bead=agent-template-xyz bead_type=impl bead_done=true confidence=HIGH policy=high auto_land=true gate_result=PASS title="x" completed="y"
+EOF
+  cat > archive.txt <<'EOF'
+## 2026-04-30 12:00 - agent-template-xyz
+- Type: impl
+EOF
+  run archive_schema_check archive.txt confidence.log
+  [ "$status" -eq 0 ] || { echo "out: $output"; return 1; }
+}
+
+# --- ralph.sh iteration footer -----------------------------------------
+
+@test "ralph.sh iteration footer prints bead context when _RALPH_COMPLETED_SUMMARY is set" {
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*# Footer:/ { capture=1 }
+    capture && /^[[:space:]]*echo "Iteration \$_RALPH_I complete/ { print; exit }
+    capture { print }
+  ' "$ralph")
+  [ -n "$block" ]
+
+  _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
+  _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: do the thing"
+  _RALPH_I=5
+
+  out=$(eval "$block")
+  [[ "$out" == *"agent-template-xyz [impl] — impl: do the thing"* ]] || { echo "Got: $out"; return 1; }
+  [[ "$out" == *"Completed: feat: [agent-template-xyz] - did the thing"* ]] || { echo "Got: $out"; return 1; }
+  [[ "$out" == *"Iteration 5 complete"* ]]
+}
+
+@test "ralph.sh iteration footer omits bead context when _RALPH_COMPLETED_SUMMARY is empty" {
+  # Non-BEAD_DONE iters (BLOCKED / REWORK / no-signal) leave the summary
+  # empty — the gating prevents a duplicate "this bead was about" line on
+  # iters where the routing branch already printed its own status.
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*# Footer:/ { capture=1 }
+    capture && /^[[:space:]]*echo "Iteration \$_RALPH_I complete/ { print; exit }
+    capture { print }
+  ' "$ralph")
+
+  _RALPH_COMPLETED_SUMMARY=""
+  _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: do the thing"
+  _RALPH_I=5
+
+  out=$(eval "$block")
+  [[ "$out" != *"agent-template-xyz [impl]"* ]] || { echo "spurious context: $out"; return 1; }
+  [[ "$out" == *"Iteration 5 complete"* ]]
+}
+
+@test "_ralph_cleanup unsets the new globals" {
+  # The cleanup function must `unset` every new _RALPH_ var so sourcing
+  # ralph.sh repeatedly (e.g., in an outer test harness) does not leak
+  # stale type/title/desc/summary from a prior run into the next.
+  _load_ralph_helpers
+  _RALPH_HAD_NOUNSET=0
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_DESCRIPTION="X"
+  _RALPH_COMPLETED_SUMMARY="Y"
+  _ralph_cleanup
+  [ -z "${_RALPH_BEAD_TYPE:-}" ]
+  [ -z "${_RALPH_BEAD_DESCRIPTION:-}" ]
+  [ -z "${_RALPH_COMPLETED_SUMMARY:-}" ]
+}
+
 # --- BEAD_ID_REGEX drift --------------------------------------------------
 
 @test "BEAD_ID_REGEX in lib.sh matches PARSERS_BEAD_ID_REGEX in parsers.sh byte-for-byte" {
