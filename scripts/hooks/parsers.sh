@@ -213,6 +213,60 @@ dec_file_refs_check() {
   return 0
 }
 
+# register_symbol_refs_check <register-path> <project-root>
+#
+# For every <path>::<symbol> token in the register, asserts <symbol> is
+# defined in <path> as one of: 'def <symbol>(', 'async def <symbol>(',
+# 'class <symbol>(' / 'class <symbol>:', module-level '<symbol> = ...', or
+# annotated module-level '<symbol>: <type>'. Returns 0 if every cited symbol
+# resolves, 1 with a list of every dangling ref otherwise.
+#
+# Skips refs whose file is missing on disk (delegated to fm_file_refs_check
+# / dec_file_refs_check — composability rather than overlap) and refs whose
+# file is gitignored (no checked-in source to grep against).
+#
+# Closes the layer below file-refs-check: a register row that cites
+# tests/test_X.py::test_Y silently breaks its bind when a pare-down deletes
+# or renames test_Y while file-existence still holds. Substring impostors
+# are rejected because each accepted form requires SYMBOL be followed by a
+# specific delimiter ('(', ':', '=', or whitespace+':'), which a longer
+# identifier (test_boom_extended vs test_boom) cannot satisfy.
+register_symbol_refs_check() {
+  local register="$1"
+  local project_root="$2"
+  local missing=""
+  local ref file_part symbol_part full_path
+
+  while IFS= read -r ref; do
+    [ -z "$ref" ] && continue
+    case "$ref" in *::*) ;; *) continue ;; esac
+    file_part="${ref%%::*}"
+    symbol_part="${ref#*::}"
+    full_path="$project_root/$file_part"
+
+    [ -f "$full_path" ] || continue
+
+    if command -v git >/dev/null 2>&1 \
+       && git -C "$project_root" check-ignore -q "$file_part" 2>/dev/null; then
+      continue
+    fi
+
+    if ! grep -qE "^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+${symbol_part}[[:space:]]*\(" "$full_path" 2>/dev/null \
+       && ! grep -qE "^[[:space:]]*class[[:space:]]+${symbol_part}[[:space:]]*[(:]" "$full_path" 2>/dev/null \
+       && ! grep -qE "^${symbol_part}[[:space:]]*=" "$full_path" 2>/dev/null \
+       && ! grep -qE "^${symbol_part}[[:space:]]*:[[:space:]]" "$full_path" 2>/dev/null; then
+      missing="${missing}
+    ${ref}"
+    fi
+  done < <(grep -oE '(tests?|proofs|src|spec|docs|tasks|scripts|lib|pkg)/[a-zA-Z0-9_/.-]+\.[a-zA-Z0-9]+::[a-zA-Z0-9_]+' "$register" 2>/dev/null | sort -u)
+
+  if [ -n "$missing" ]; then
+    printf '%s\n' "$missing"
+    return 1
+  fi
+  return 0
+}
+
 # Starter rubric constants — used by rubric_edit_check.
 RUBRIC_STARTER_DISCLAIMER="This file is a starter rubric"
 RUBRIC_STARTER_HEADER="# Review Severity Rubric"

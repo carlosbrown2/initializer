@@ -307,6 +307,241 @@ EOF
   [[ "$output" == *"scripts/missing.sh"* ]]
 }
 
+# --- register_symbol_refs_check ------------------------------------------
+
+@test "register_symbol_refs_check: accepts def <symbol>(" {
+  mkdir -p "$TMPDIR_TEST/tests"
+  cat > "$TMPDIR_TEST/tests/m.py" <<'EOF'
+def test_boom():
+    pass
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | tests/m.py::test_boom | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "register_symbol_refs_check: accepts async def <symbol>(" {
+  mkdir -p "$TMPDIR_TEST/src"
+  cat > "$TMPDIR_TEST/src/handler.py" <<'EOF'
+async def handle_request(req):
+    return req
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | src/handler.py::handle_request | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "register_symbol_refs_check: accepts class <symbol>(Base):" {
+  mkdir -p "$TMPDIR_TEST/src"
+  cat > "$TMPDIR_TEST/src/widget.py" <<'EOF'
+class Widget(Thing):
+    pass
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | src/widget.py::Widget | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+}
+
+@test "register_symbol_refs_check: accepts class <symbol>:" {
+  mkdir -p "$TMPDIR_TEST/src"
+  cat > "$TMPDIR_TEST/src/empty.py" <<'EOF'
+class Empty:
+    pass
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | src/empty.py::Empty | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+}
+
+@test "register_symbol_refs_check: accepts module-level assignment <symbol> = ..." {
+  mkdir -p "$TMPDIR_TEST/scripts"
+  cat > "$TMPDIR_TEST/scripts/lib.sh" <<'EOF'
+BEAD_ID_REGEX='[a-z]+-[0-9]+'
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | scripts/lib.sh::BEAD_ID_REGEX | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+}
+
+@test "register_symbol_refs_check: accepts annotated module-level <symbol>: <type> = ..." {
+  mkdir -p "$TMPDIR_TEST/src"
+  cat > "$TMPDIR_TEST/src/conf.py" <<'EOF'
+TIMEOUT: int = 30
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | src/conf.py::TIMEOUT | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+}
+
+@test "register_symbol_refs_check: rejects when cited test was deleted (file exists, symbol does not)" {
+  mkdir -p "$TMPDIR_TEST/tests"
+  cat > "$TMPDIR_TEST/tests/m.py" <<'EOF'
+def test_other():
+    pass
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | tests/m.py::test_deleted | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"tests/m.py::test_deleted"* ]]
+}
+
+@test "register_symbol_refs_check: rejects when cited helper was renamed" {
+  mkdir -p "$TMPDIR_TEST/scripts"
+  cat > "$TMPDIR_TEST/scripts/lib.sh" <<'EOF'
+new_name() {
+  echo "renamed"
+}
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | scripts/lib.sh::old_name | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"scripts/lib.sh::old_name"* ]]
+}
+
+@test "register_symbol_refs_check: rejects substring impostor (test_boom vs test_boom_extended)" {
+  mkdir -p "$TMPDIR_TEST/tests"
+  cat > "$TMPDIR_TEST/tests/m.py" <<'EOF'
+def test_boom_extended():
+    pass
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | tests/m.py::test_boom | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"tests/m.py::test_boom"* ]]
+}
+
+@test "register_symbol_refs_check: substring-impostor reject covers assignment form too" {
+  # FOO= must not match a longer name FOO_EXT=. The mandatory delimiter
+  # following SYMBOL ([[:space:]]*=) blocks the substring impostor.
+  mkdir -p "$TMPDIR_TEST/scripts"
+  cat > "$TMPDIR_TEST/scripts/lib.sh" <<'EOF'
+FOO_EXT='value'
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | scripts/lib.sh::FOO | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"scripts/lib.sh::FOO"* ]]
+}
+
+@test "register_symbol_refs_check: skips ref whose file is missing on disk (delegated to file-refs-check)" {
+  # Per the bead spec: missing-file detection is fm_file_refs_check's job;
+  # this check is a layered residue, so it must NOT redundantly flag the
+  # missing file (otherwise a single typo produces two distinct errors).
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | tests/does_not_exist.py::test_anything | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "register_symbol_refs_check: skips gitignored file (no checked-in source to grep)" {
+  ( cd "$TMPDIR_TEST" && git init -q && \
+    printf 'scripts/runtime/\n' > .gitignore && \
+    mkdir -p scripts/runtime && \
+    echo 'whatever' > scripts/runtime/state.sh && \
+    git add .gitignore && git -c user.email=t@t -c user.name=t commit -q -m init )
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | scripts/runtime/state.sh::GHOST_SYMBOL | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "register_symbol_refs_check: lists every dangling ref, not just the first" {
+  mkdir -p "$TMPDIR_TEST/tests"
+  cat > "$TMPDIR_TEST/tests/a.py" <<'EOF'
+def kept():
+    pass
+EOF
+  cat > "$TMPDIR_TEST/tests/b.py" <<'EOF'
+def kept_too():
+    pass
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| m1 | x | correctness | tests/a.py::gone_one | covered |
+| m2 | y | correctness | tests/b.py::gone_two | covered |
+| m3 | z | correctness | tests/a.py::gone_three | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"tests/a.py::gone_one"* ]]
+  [[ "$output" == *"tests/b.py::gone_two"* ]]
+  [[ "$output" == *"tests/a.py::gone_three"* ]]
+}
+
+@test "register_symbol_refs_check: works against a .bats file (module-level assignment)" {
+  mkdir -p "$TMPDIR_TEST/tests/hooks"
+  cat > "$TMPDIR_TEST/tests/hooks/example.bats" <<'EOF'
+SOME_FIXTURE='value'
+
+@test "shape" {
+  echo ok
+}
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | tests/hooks/example.bats::SOME_FIXTURE | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+}
+
+@test "register_symbol_refs_check: works against a .md file (module-level assignment)" {
+  mkdir -p "$TMPDIR_TEST/docs"
+  cat > "$TMPDIR_TEST/docs/notes.md" <<'EOF'
+Header
+
+DEFINED_TOKEN = 'value referenced from a register row'
+EOF
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | docs/notes.md::DEFINED_TOKEN | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+}
+
+@test "register_symbol_refs_check: passes silently when register has no ::symbol citations" {
+  cat > "$TMPDIR_TEST/fm.md" <<'EOF'
+| mod | boom | correctness | tests/a.py | covered |
+EOF
+  run register_symbol_refs_check "$TMPDIR_TEST/fm.md" "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "smoke: real docs/failure-modes.md passes register_symbol_refs_check" {
+  run register_symbol_refs_check "$PROJECT_ROOT/docs/failure-modes.md" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+}
+
+@test "smoke: real docs/decision-register.md passes register_symbol_refs_check" {
+  run register_symbol_refs_check "$PROJECT_ROOT/docs/decision-register.md" "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+}
+
 # --- claude_model_tags_check ---------------------------------------------
 
 @test "claude_model_tags_check: accepts entry with model: tag" {

@@ -11,8 +11,9 @@
 #   6. Scope enforcement
 #   7. Failure-mode register integrity
 #   8. Decision register integrity
-#   9. Review artifact validator
-#  10. CLAUDE.md model-tag validator
+#   9. Register symbol-refs validator
+#  10. Review artifact validator
+#  11. CLAUDE.md model-tag validator
 #
 # Also installed:
 #   commit-msg: enforces "<type>: [bead-id] - <title>" format on bead commits
@@ -307,6 +308,24 @@ if [ -f "$FM_REGISTER" ]; then
     echo "  or correct the path in the register."
     exit 1
   fi
+
+  if ! missing_syms=$(register_symbol_refs_check "$FM_REGISTER" "$PROJECT_ROOT"); then
+    echo "BLOCKED: docs/failure-modes.md cites symbols that are not defined in the named file:"
+    printf '%s\n' "$missing_syms"
+    echo ""
+    echo "  Accepted defining forms (grep-based, not AST):"
+    echo "    def <symbol>(           — Python function"
+    echo "    async def <symbol>(     — Python async function"
+    echo "    class <symbol>(...)     — Python class with bases"
+    echo "    class <symbol>:         — Python class without bases"
+    echo "    <symbol> = ...          — module-level assignment"
+    echo "    <symbol>: <type>        — annotated module-level assignment"
+    echo ""
+    echo "  How to fix: rename or restore the cited symbol, or update the register row"
+    echo "  to cite the new name. The check skips missing files (delegated to"
+    echo "  file-refs-check) and gitignored files (no checked-in source)."
+    exit 1
+  fi
 fi
 
 # --- Decision register integrity ---
@@ -345,6 +364,24 @@ if [ -f "$DEC_REGISTER" ]; then
     echo ""
     echo "  Every bounding mechanism that names a file must point to a real file."
     echo "  Either create the file in this same commit, or correct the path in the register."
+    exit 1
+  fi
+
+  if ! missing_dec_syms=$(register_symbol_refs_check "$DEC_REGISTER" "$PROJECT_ROOT"); then
+    echo "BLOCKED: docs/decision-register.md cites symbols that are not defined in the named file:"
+    printf '%s\n' "$missing_dec_syms"
+    echo ""
+    echo "  Accepted defining forms (grep-based, not AST):"
+    echo "    def <symbol>(           — Python function"
+    echo "    async def <symbol>(     — Python async function"
+    echo "    class <symbol>(...)     — Python class with bases"
+    echo "    class <symbol>:         — Python class without bases"
+    echo "    <symbol> = ...          — module-level assignment"
+    echo "    <symbol>: <type>        — annotated module-level assignment"
+    echo ""
+    echo "  How to fix: rename or restore the cited symbol, or update the register row"
+    echo "  to cite the new name. The check skips missing files (delegated to"
+    echo "  file-refs-check) and gitignored files (no checked-in source)."
     exit 1
   fi
 fi
@@ -581,6 +618,7 @@ echo "  - Pre-commit: Rubric-edit guard (active — rejects the unedited 'starte
 echo "  - Pre-commit: Scope enforcement (active — requires .current-bead-scope for impl/pare/compound beads)"
 echo "  - Pre-commit: Failure-mode register integrity (active — fires only if docs/failure-modes.md exists)"
 echo "  - Pre-commit: Decision register integrity + bounding-mechanism file refs (active — fires only if docs/decision-register.md exists)"
+echo "  - Pre-commit: Register symbol-refs validator (active — rejects <path>::<symbol> citations whose symbol is not defined in the cited file; fires when either register exists)"
 echo "  - Pre-commit: Review/research bead write protection (active — fires only if .current-bead-type=review|research)"
 echo "  - Pre-commit: Review artifact validator (active — fires only if .current-bead-type=review and review files are staged)"
 echo "  - Pre-commit: CLAUDE.md model-tag validator (active — fires only if CLAUDE.md is staged)"
