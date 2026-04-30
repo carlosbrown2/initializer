@@ -404,7 +404,15 @@ RETRY_EOF
     _RALPH_POLICY=$(read_auto_land_policy "$_RALPH_PROJECT_ROOT/CLAUDE.md")
     _RALPH_AUTO_LAND=$(should_auto_land "$_RALPH_CONFIDENCE" "$_RALPH_POLICY")
 
-    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_ACTIVE_BEAD:-unknown} bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT" >> "$_RALPH_CONFIDENCE_LOG"
+    # _RALPH_BEAD_ID, not _RALPH_ACTIVE_BEAD: the latter is empty whenever the
+    # iter started with no in-progress bead and the agent picked up a fresh
+    # bead via _ralph_bead_ready during the iter — so logging it printed
+    # `bead=unknown` for almost every successful BEAD_DONE iter, and
+    # archive_schema_check (which filters bead=unknown out) silently passed.
+    # _RALPH_BEAD_ID is set at the iter top from either the resumed
+    # _RALPH_ACTIVE_BEAD or _ralph_bead_ready, so it always names the bead
+    # the agent will work on. Same fix in the confidence=NONE branch below.
+    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT" >> "$_RALPH_CONFIDENCE_LOG"
 
     if [[ "$_RALPH_AUTO_LAND" == "true" ]]; then
       echo "Auto-land: confidence=$_RALPH_CONFIDENCE, policy=$_RALPH_POLICY"
@@ -414,7 +422,7 @@ RETRY_EOF
       read -r
     fi
   else
-    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_ACTIVE_BEAD:-unknown} bead_done=$_RALPH_BEAD_DONE confidence=NONE (no signal detected) gate_result=$_RALPH_GATE_RESULT" >> "$_RALPH_CONFIDENCE_LOG"
+    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_done=$_RALPH_BEAD_DONE confidence=NONE (no signal detected) gate_result=$_RALPH_GATE_RESULT" >> "$_RALPH_CONFIDENCE_LOG"
   fi
 
   echo "Iteration $_RALPH_I complete. Continuing..."

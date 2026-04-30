@@ -490,6 +490,80 @@ EOF
   [ "$(cat "$result_file")" = "FAIL" ]
 }
 
+# --- confidence.log bead-id source -------------------------------------
+#
+# Regression bead agent-template-65s: ralph.sh's two BEAD_DONE confidence.log
+# lines used `${_RALPH_ACTIVE_BEAD:-unknown}`, but _RALPH_ACTIVE_BEAD is empty
+# whenever an iter starts with no in-progress bead — the agent then picks up
+# a fresh bead via _ralph_bead_ready during the iter, and that bead's id is
+# stored in _RALPH_BEAD_ID. The result was `bead=unknown` on every successful
+# BEAD_DONE iter that started clean (≈all of them after a healthy iter), and
+# archive_schema_check filtered those out before requiring archive entries —
+# so the parser silently passed on the wrong input. The fix references
+# _RALPH_BEAD_ID, set at the iter top from either the resumed active bead or
+# _ralph_bead_ready, so it always names the bead the agent will work on.
+#
+# Test strategy: extract the actual log-emit lines from ralph.sh and eval
+# them under the variable state that reproduces the bug condition. Eval'ing
+# the real source line (rather than re-implementing it) means a regression
+# to `_RALPH_ACTIVE_BEAD` will surface here even if the new code is in a
+# different shape than today's. Both BEAD_DONE log lines are covered (the
+# auto-land branch and the no-confidence/NONE branch).
+
+@test "ralph.sh BEAD_DONE log line uses the picked-up bead id when iter started clean" {
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+
+  # Extract the BEAD_DONE log line from the auto-land branch. Identified by
+  # its trailing fields (`auto_land=$_RALPH_AUTO_LAND gate_result=...`),
+  # which are unique to this line in ralph.sh.
+  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*auto_land=\$_RALPH_AUTO_LAND/ { print; exit }' "$ralph")
+  [ -n "$log_line" ]
+
+  # Reproduce the bug condition: no in-progress bead at iter start, fresh
+  # bead picked up via _ralph_bead_ready. Pre-fix this would emit
+  # `bead=unknown`; post-fix it emits the picked-up id.
+  _RALPH_I=1
+  _RALPH_ACTIVE_BEAD=""
+  _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_DONE=true
+  _RALPH_CONFIDENCE="HIGH"
+  _RALPH_POLICY="all"
+  _RALPH_AUTO_LAND="true"
+  _RALPH_GATE_RESULT="PASS"
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+
+  eval "$log_line"
+
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"bead=agent-template-xyz"* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" != *"bead=unknown"* ]] || { echo "Got: $emitted"; return 1; }
+}
+
+@test "ralph.sh confidence=NONE log line uses the picked-up bead id when iter started clean" {
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+
+  # Extract the confidence=NONE branch log line (BEAD_DONE seen but no
+  # confidence verdict — e.g., a bead_done=false path that still wants to
+  # log the iter outcome). Identified by `confidence=NONE`.
+  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*confidence=NONE/ { print; exit }' "$ralph")
+  [ -n "$log_line" ]
+
+  _RALPH_I=1
+  _RALPH_ACTIVE_BEAD=""
+  _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_DONE=true
+  _RALPH_GATE_RESULT="PASS"
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+
+  eval "$log_line"
+
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"bead=agent-template-xyz"* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" != *"bead=unknown"* ]] || { echo "Got: $emitted"; return 1; }
+}
+
 # --- BEAD_ID_REGEX drift --------------------------------------------------
 
 @test "BEAD_ID_REGEX in lib.sh matches PARSERS_BEAD_ID_REGEX in parsers.sh byte-for-byte" {
