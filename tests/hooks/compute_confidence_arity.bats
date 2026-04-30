@@ -21,13 +21,15 @@ setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
 }
 
-@test "compute_confidence body uses at most 5 positional parameters" {
-  # Current axes (2026-04-30):
-  #   $1 gate_result, $2 diff_lines, $3 touched_hooks,
-  #   $4 touched_claude_md, $5 retry_count.
-  # The 2026-04-27 back-port entry retires $5 (retry_count) and the
-  # 2026-04-29 runaway entry adds loop_saturation as the new $5 — net
-  # axis count preserved. Any change that raises this cap earns an
+@test "compute_confidence body uses at most 4 positional parameters" {
+  # Current axes (2026-04-30, after pare bead agent-template-3st):
+  #   $1 gate_result, $2 diff_lines, $3 touched_hooks, $4 touched_claude_md.
+  # The 2026-04-27 entry retired $5 (retry_count); the 2026-04-29 entry
+  # added loop_saturation as the new $5; pare bead agent-template-3st
+  # retired loop_saturation without adding a replacement (the runaway-
+  # loop's structural fixes — integration-pulse beads + pattern_citation_check
+  # — bind the failure class on their own; the runtime detector did not pay
+  # for its surface cost). Any change that raises this cap earns an
   # explicit back-port-doc entry naming the retirement that pays for it.
   local body max_pos
   body=$(awk '
@@ -45,17 +47,16 @@ setup() {
     | sort -un \
     | tail -1)
   [ -n "$max_pos" ]
-  if [ "$max_pos" -gt 5 ]; then
-    echo "compute_confidence references \$$max_pos (cap=5 positional params)." >&2
+  if [ "$max_pos" -gt 4 ]; then
+    echo "compute_confidence references \$$max_pos (cap=4 positional params)." >&2
     echo "Adding an axis requires retiring one — see invariant #3 in" >&2
     echo "docs/upstream-harness-improvements.md (one in, one out)." >&2
     return 1
   fi
 }
 
-@test "compute_confidence body has at most 4 downgrade-axis lines" {
-  # Current downgrade axes (2026-04-30):
-  #   retry_count > 0
+@test "compute_confidence body has at most 3 downgrade-axis lines" {
+  # Current downgrade axes (2026-04-30, after pare bead agent-template-3st):
   #   diff_lines > 500
   #   touched_hooks == "true"
   #   touched_claude_md == "true"
@@ -72,8 +73,8 @@ setup() {
   [ -n "$body" ]
   axis_count=$(printf '%s\n' "$body" \
     | grep -cE '\[\[[[:space:]].*[[:space:]]\]\][[:space:]]+&&[[:space:]]+downgrades=')
-  if [ "$axis_count" -gt 4 ]; then
-    echo "compute_confidence has $axis_count downgrade-axis lines (cap=4)." >&2
+  if [ "$axis_count" -gt 3 ]; then
+    echo "compute_confidence has $axis_count downgrade-axis lines (cap=3)." >&2
     echo "Adding an axis requires retiring one — see invariant #3 in" >&2
     echo "docs/upstream-harness-improvements.md (one in, one out)." >&2
     return 1
