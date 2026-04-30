@@ -421,7 +421,13 @@ RETRY_EOF
     else
       _RALPH_TOUCHED_HOOKS=false
     fi
-    if echo "$_RALPH_HEAD_FILES" | grep -qx 'CLAUDE.md'; then
+    # Scope the touched_claude_md signal to edits *outside* `## Discovered
+    # Patterns`. Compound beads append model-tagged entries to that section
+    # by design; an append-only output edit redefines no rule the gate runs,
+    # so it should not downgrade confidence. Edits to `## Invariants` or
+    # `## Verification Gate` still trigger here. See lib.sh
+    # claude_md_touched_outside_patterns.
+    if claude_md_touched_outside_patterns "$_RALPH_PROJECT_ROOT"; then
       _RALPH_TOUCHED_CLAUDE_MD=true
     else
       _RALPH_TOUCHED_CLAUDE_MD=false

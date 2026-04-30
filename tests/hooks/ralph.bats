@@ -547,6 +547,217 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+# --- claude_md_touched_outside_patterns ---------------------------------
+#
+# Bead agent-template-dvd: the prior `grep -qx CLAUDE.md` proxied the
+# touched_claude_md axis on file-name match alone, so every compound bead
+# that promoted a model-tagged entry to `## Discovered Patterns` got
+# downgraded to MEDIUM even though the gate's rules were unchanged. The
+# replacement strips the patterns block from HEAD~1:CLAUDE.md and
+# HEAD:CLAUDE.md and compares the rest. These tests cover the bead's
+# enumerated edge cases against real temp git repos so the awk regex
+# anchors and the file-existence XOR are both pinned.
+#
+# Helper: write CLAUDE.md content, commit, and stage subsequent edits.
+# Uses git -c overrides so the test does not depend on the runner's
+# committer identity. Quiet flags suppress git's per-commit chatter.
+
+_dvd_init_repo() {
+  cd "$TMPDIR_TEST"
+  git init -q
+  git config user.email t@t.test
+  git config user.name t
+}
+
+_dvd_commit_claude_md() {
+  printf '%s' "$1" > CLAUDE.md
+  git add CLAUDE.md
+  git -c user.email=t@t.test -c user.name=t commit -q -m "$2"
+}
+
+# A representative CLAUDE.md fixture covering the three section axes the
+# downgrade is meant to discriminate: prose, gate-rule body, invariants
+# body, and a Discovered Patterns block. Tests mutate one section per
+# case so the helper's strip-and-compare can prove which axis flipped.
+_dvd_fixture_baseline() {
+  cat <<'EOF'
+# Project Rules
+
+Some prose between sections.
+
+## Verification Gate
+
+```
+bash -n foo.sh && shellcheck foo.sh
+```
+
+## Invariants
+
+- Stays under 200 lines.
+- No bypassing hooks.
+
+## Discovered Patterns
+
+### First pattern
+model: claude-opus-4-7
+Body of the first pattern.
+
+### Second pattern
+model: claude-opus-4-7
+Body of the second pattern.
+EOF
+}
+
+@test "claude_md_touched_outside_patterns: pattern-only edit returns false (compound-bead happy path)" {
+  # The motivating case. A compound bead appends a new ### entry to
+  # ## Discovered Patterns; nothing outside the section moves. The strip
+  # removes the patterns block from both sides, leaving identical residue
+  # — function returns 1 (false), so the touched_claude_md axis stays off
+  # and the iteration can earn HIGH on a green gate.
+  _dvd_init_repo
+  _dvd_fixture_baseline > base.tmp
+  _dvd_commit_claude_md "$(cat base.tmp)" "init"
+  # Append a third pattern entry inside ## Discovered Patterns.
+  cat >> base.tmp <<'EOF'
+
+### Third pattern
+model: claude-opus-4-7
+A new pattern body.
+EOF
+  _dvd_commit_claude_md "$(cat base.tmp)" "compound: promote pattern"
+  run claude_md_touched_outside_patterns "$TMPDIR_TEST"
+  [ "$status" -eq 1 ]
+}
+
+@test "claude_md_touched_outside_patterns: ## Invariants edit returns true" {
+  # An invariants-body edit is exactly the rule-shifting class the axis
+  # exists to flag. The strip preserves the Invariants section in both
+  # sides; the diff between them shows up in the comparison and the
+  # function returns 0 (true).
+  _dvd_init_repo
+  _dvd_fixture_baseline > base.tmp
+  _dvd_commit_claude_md "$(cat base.tmp)" "init"
+  # Mutate one bullet under ## Invariants.
+  sed -i.bak 's/200 lines/250 lines/' base.tmp
+  rm -f base.tmp.bak
+  _dvd_commit_claude_md "$(cat base.tmp)" "invariants: raise size cap"
+  run claude_md_touched_outside_patterns "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+}
+
+@test "claude_md_touched_outside_patterns: ## Verification Gate clause edit returns true" {
+  # A gate-clause edit redefines the property a green .last-gate-result
+  # asserts about the tree — exactly the case the touched_claude_md
+  # downgrade is calibrated for. The strip leaves the gate body intact;
+  # the per-iter comparison flags the change.
+  _dvd_init_repo
+  _dvd_fixture_baseline > base.tmp
+  _dvd_commit_claude_md "$(cat base.tmp)" "init"
+  sed -i.bak 's/bash -n foo.sh/bash -n foo.sh \&\& bash -n bar.sh/' base.tmp
+  rm -f base.tmp.bak
+  _dvd_commit_claude_md "$(cat base.tmp)" "gate: add bar.sh parse-check"
+  run claude_md_touched_outside_patterns "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+}
+
+@test "claude_md_touched_outside_patterns: no CLAUDE.md change returns false" {
+  # The HEAD commit touches a file other than CLAUDE.md. HEAD:CLAUDE.md
+  # and HEAD~1:CLAUDE.md resolve to identical blobs; stripped, they are
+  # identical too. The function must return 1 — a regression that strips
+  # asymmetrically (e.g. forgets `next` after the patterns marker) would
+  # break this case first.
+  _dvd_init_repo
+  _dvd_fixture_baseline > base.tmp
+  _dvd_commit_claude_md "$(cat base.tmp)" "init"
+  printf 'unrelated\n' > other.txt
+  git add other.txt
+  git -c user.email=t@t.test -c user.name=t commit -q -m "add other.txt"
+  run claude_md_touched_outside_patterns "$TMPDIR_TEST"
+  [ "$status" -eq 1 ]
+}
+
+@test "claude_md_touched_outside_patterns: file added in HEAD returns true" {
+  # The file appears for the first time at HEAD: HEAD~1:CLAUDE.md fails
+  # the cat-file existence probe, HEAD:CLAUDE.md succeeds. The XOR branch
+  # short-circuits to true regardless of whether the new file is mostly
+  # patterns — adding the rule file is itself a non-trivial event.
+  _dvd_init_repo
+  # Seed commit so HEAD~1 exists but does not contain CLAUDE.md.
+  printf 'placeholder\n' > seed.txt
+  git add seed.txt
+  git -c user.email=t@t.test -c user.name=t commit -q -m "seed"
+  _dvd_fixture_baseline > base.tmp
+  _dvd_commit_claude_md "$(cat base.tmp)" "add CLAUDE.md"
+  run claude_md_touched_outside_patterns "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+}
+
+@test "claude_md_touched_outside_patterns: file deleted in HEAD returns true" {
+  # The complement of the file-added case: HEAD~1:CLAUDE.md exists,
+  # HEAD:CLAUDE.md does not. Same XOR short-circuit on opposite polarity.
+  # Deleting the rule file is at least as alarming as editing it.
+  _dvd_init_repo
+  _dvd_fixture_baseline > base.tmp
+  _dvd_commit_claude_md "$(cat base.tmp)" "init"
+  git rm -q CLAUDE.md
+  git -c user.email=t@t.test -c user.name=t commit -q -m "remove CLAUDE.md"
+  run claude_md_touched_outside_patterns "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+}
+
+@test "claude_md_touched_outside_patterns: live repo smoke — boolean shape only" {
+  # Smoke against the actual project tree. The verdict for any specific
+  # commit changes over time, so this test asserts only the contract
+  # surface: the function exits with 0 or 1 (never crashes, never prints
+  # to stdout) when called against a real repo with real history.
+  run claude_md_touched_outside_patterns "$PROJECT_ROOT"
+  [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "claude_md_touched_outside_patterns: pattern-deletion-only edit returns false" {
+  # Adversarial complement to the pattern-only happy path: removing a
+  # pattern entry (model retirement under § 'Model upgrade drift') is
+  # also a patterns-section-only edit and must not downgrade. A
+  # regression that compared length-of-file or used a one-sided strip
+  # would flip the verdict on deletion while passing on append.
+  _dvd_init_repo
+  _dvd_fixture_baseline > base.tmp
+  _dvd_commit_claude_md "$(cat base.tmp)" "init"
+  # Strip the second pattern entry only — leaves first intact.
+  awk '
+    /^### Second pattern/ { skip=1; next }
+    skip && /^### / { skip=0 }
+    skip && /^## / { skip=0 }
+    !skip
+  ' base.tmp > shorter.tmp
+  _dvd_commit_claude_md "$(cat shorter.tmp)" "compound: retire pattern"
+  run claude_md_touched_outside_patterns "$TMPDIR_TEST"
+  [ "$status" -eq 1 ]
+}
+
+@test "claude_md_touched_outside_patterns: edit straddling patterns boundary returns true" {
+  # A mixed edit — one line inside ## Discovered Patterns and one line
+  # outside — must trip the downgrade. The strip keeps the outside line
+  # in the comparison, so even when the patterns delta is the loudest
+  # part of the diff the residue still differs. Pins against a regression
+  # that shorts to false whenever any pattern changed.
+  _dvd_init_repo
+  _dvd_fixture_baseline > base.tmp
+  _dvd_commit_claude_md "$(cat base.tmp)" "init"
+  sed -i.bak 's/Some prose between sections./Some prose between sections, edited./' base.tmp
+  cat >> base.tmp <<'EOF'
+
+### Fourth pattern
+model: claude-opus-4-7
+Body of the fourth pattern.
+EOF
+  rm -f base.tmp.bak
+  _dvd_commit_claude_md "$(cat base.tmp)" "mixed: prose + pattern"
+  run claude_md_touched_outside_patterns "$TMPDIR_TEST"
+  [ "$status" -eq 0 ]
+}
+
 @test "ralph.sh stale-HEAD path forces gate_result=FAIL and writes FAIL to .last-gate-result" {
   # Integration test: extract ralph.sh's gate-result block (from the
   # `_RALPH_GATE_RESULT="skipped"` assignment through the closing outer `fi`)

@@ -208,6 +208,75 @@ compute_head_unchanged_for_bead_done() {
   return 1
 }
 
+# Detect whether CLAUDE.md was modified in HEAD outside its
+# `## Discovered Patterns` section, by comparing HEAD~1:CLAUDE.md and
+# HEAD:CLAUDE.md with the patterns block stripped from each side.
+#
+# `compute_confidence` downgrades when CLAUDE.md is touched because
+# rule changes warrant scrutiny. But compound beads in this template's
+# quartet pattern (impl → review → pare → compound) routinely promote
+# model-tagged entries to `## Discovered Patterns` — an append-only
+# output section that redefines no rule the gate runs. A naive
+# "did CLAUDE.md change" check downgrades those edits anyway, so every
+# compound bead saturates at MEDIUM regardless of the gate's verdict.
+# This helper scopes the signal to the bug class actually worth pausing
+# on: edits to `## Invariants`, `## Verification Gate`, `## Pinned Tool
+# Versions`, and the prose between sections.
+#
+# Strategy: bypass unified-diff parsing entirely. Read both blob shapes,
+# strip everything from `## Discovered Patterns` to the next top-level
+# `## ` heading (or EOF) on each side, compare the rest. Hunk-header
+# offsets and section reordering are handled trivially because the
+# comparison is on stripped content, not on diff text.
+#
+# Args:
+#   repo_root  — git repo root passed to `git -C`. Defaults to the
+#                current working directory when omitted.
+#
+# Returns:
+#   0  CLAUDE.md was modified outside `## Discovered Patterns` (or the
+#      file was added or removed entirely between HEAD~1 and HEAD).
+#      Caller should treat as `touched_claude_md=true`.
+#   1  CLAUDE.md was unchanged, or the only changes were inside the
+#      patterns section. Caller should treat as `touched_claude_md=false`.
+#
+# Style invariant: CLAUDE.md uses `## ` for top-level sections and `### `
+# for entries inside `## Discovered Patterns`. If a downstream project
+# ever uses `## ` for nested entries, the strip silently mis-bounds —
+# pair an audit bead with that change.
+claude_md_touched_outside_patterns() {
+  local repo_root="${1:-.}"
+  local cur_exists=true prev_exists=true
+  git -C "$repo_root" cat-file -e HEAD:CLAUDE.md 2>/dev/null || cur_exists=false
+  git -C "$repo_root" cat-file -e 'HEAD~1:CLAUDE.md' 2>/dev/null || prev_exists=false
+
+  # File added or deleted (XOR): the file's existence flipped, which is
+  # itself a non-trivial CLAUDE.md change regardless of section content.
+  if [[ "$cur_exists" != "$prev_exists" ]]; then
+    return 0
+  fi
+
+  # Neither side has the file (no parent commit and no current file, or
+  # the project genuinely has no CLAUDE.md): nothing to grade.
+  if [[ "$cur_exists" = "false" ]]; then
+    return 1
+  fi
+
+  local cur prev
+  cur=$(git -C "$repo_root" show HEAD:CLAUDE.md)
+  prev=$(git -C "$repo_root" show 'HEAD~1:CLAUDE.md')
+
+  local strip_awk='/^## Discovered Patterns[[:space:]]*$/{f=1;next} /^## /{f=0} !f'
+  local cur_stripped prev_stripped
+  cur_stripped=$(printf '%s' "$cur" | awk "$strip_awk")
+  prev_stripped=$(printf '%s' "$prev" | awk "$strip_awk")
+
+  if [[ "$cur_stripped" != "$prev_stripped" ]]; then
+    return 0
+  fi
+  return 1
+}
+
 # Pure retry-state transition. Given the just-failed bead id, the prior
 # last-failed bead id, the current fail count, and max retries, print the
 # new tuple "NEW_COUNT|NEW_LAST|ACTION" to stdout. Action is one of:
