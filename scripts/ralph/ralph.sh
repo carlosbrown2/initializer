@@ -26,7 +26,7 @@ _ralph_cleanup() {
   unset _RALPH_BEAD_DONE _RALPH_BLOCKED_REASON _RALPH_REWORK_REASON
   unset _RALPH_PREREQ_BEAD _RALPH_BLOCKER_TITLE
   unset _RALPH_GATE_RESULT _RALPH_CONFIDENCE _RALPH_POLICY _RALPH_AUTO_LAND
-  unset _RALPH_FAIL_COUNT_AT_ITER_START
+  unset _RALPH_FOLLOWUP_NUMER _RALPH_FOLLOWUP_DENOM _RALPH_FOLLOWUP_RATIO
   unset _RALPH_DIFF_LINES _RALPH_TOUCHED_HOOKS _RALPH_TOUCHED_CLAUDE_MD
   unset _RALPH_HEAD_FILES
   unset _RALPH_HEAD_AT_ITER_START _RALPH_HEAD_AT_BEAD_DONE
@@ -285,13 +285,6 @@ for _RALPH_I in $(seq 1 "$_RALPH_MAX_ITERATIONS"); do
     _RALPH_LAST_FAILED_BEAD=""
   fi
 
-  # Snapshot fail_count BEFORE any branch below can reset it. compute_confidence
-  # reads this value as its "retry_count" signal: the number of prior failures
-  # on this bead going into the iteration. If we read _RALPH_FAIL_COUNT after
-  # the BEAD_DONE branch (which sets it to 0), a bead that finally succeeded
-  # on its third attempt would look indistinguishable from a first-try success.
-  _RALPH_FAIL_COUNT_AT_ITER_START=$_RALPH_FAIL_COUNT
-
   # Write retry state file for the agent
   cat > "$_RALPH_RETRY_STATE_FILE" << RETRY_EOF
 {"fail_count": $_RALPH_FAIL_COUNT, "bead_id": "${_RALPH_LAST_FAILED_BEAD:-}", "iteration": $_RALPH_I}
@@ -522,12 +515,33 @@ RETRY_EOF
     else
       _RALPH_TOUCHED_CLAUDE_MD=false
     fi
+    # loop_saturation: count `Phase % follow-up:` titles among the last 5
+    # closed beads. AND-suppressor (no `Phase N impl:` or `integration-` in
+    # the same window) is baked in here by passing 0 as the ratio — the
+    # function takes one value, so the conjunction lives at the call site.
+    # Raw N/5 still goes to confidence.log so audits see the underlying count.
+    _RALPH_FOLLOWUP_NUMER=0
+    _RALPH_FOLLOWUP_DENOM=5
+    _RALPH_FOLLOWUP_RATIO=0
+    _RALPH_RECENT_CLOSED_TITLES=$(bd list --status=closed --json 2>/dev/null \
+      | jq -r 'sort_by(.closed_at) | reverse | .[0:5] | .[].title' 2>/dev/null || true)
+    if [[ -n "$_RALPH_RECENT_CLOSED_TITLES" ]]; then
+      _RALPH_FOLLOWUP_NUMER=$(echo "$_RALPH_RECENT_CLOSED_TITLES" | grep -cE '^Phase .* follow-up:' || true)
+      _RALPH_HAS_PHASE_OR_INT=$(echo "$_RALPH_RECENT_CLOSED_TITLES" | grep -cE '^(Phase [0-9]+ impl:|integration-)' || true)
+      if [[ "$_RALPH_HAS_PHASE_OR_INT" -eq 0 ]]; then
+        _RALPH_FOLLOWUP_RATIO=$(awk -v n="$_RALPH_FOLLOWUP_NUMER" -v d="$_RALPH_FOLLOWUP_DENOM" 'BEGIN { if (d > 0) printf "%.4f", n/d; else print "0" }')
+      fi
+    fi
+    unset _RALPH_RECENT_CLOSED_TITLES _RALPH_HAS_PHASE_OR_INT
     _RALPH_CONFIDENCE=$(compute_confidence \
-      "$_RALPH_GATE_RESULT" \
-      "$_RALPH_DIFF_LINES" \
-      "$_RALPH_TOUCHED_HOOKS" \
-      "$_RALPH_TOUCHED_CLAUDE_MD" \
-      "$_RALPH_FAIL_COUNT_AT_ITER_START")
+      "$_RALPH_GATE_RESULT" "$_RALPH_DIFF_LINES" "$_RALPH_TOUCHED_HOOKS" \
+      "$_RALPH_TOUCHED_CLAUDE_MD" "$_RALPH_FOLLOWUP_RATIO")
+    # LOOP_SATURATION line on the saturation-downgrade path: same trigger as
+    # compute_confidence's loop_saturation axis. Separate line so a future
+    # audit can grep LOOP_SATURATION directly.
+    if [[ "$(awk -v r="$_RALPH_FOLLOWUP_RATIO" 'BEGIN { print (r >= 0 && r <= 1 && r > 0.6) ? 1 : 0 }')" == "1" ]]; then
+      echo "[$(date -Iseconds)] iter=$_RALPH_I LOOP_SATURATION followup_ratio=$_RALPH_FOLLOWUP_NUMER/$_RALPH_FOLLOWUP_DENOM bead=${_RALPH_BEAD_ID:-unknown}" >> "$_RALPH_CONFIDENCE_LOG"
+    fi
     # Force LOW when a governance bead has aged past the cut. Override
     # post-compute_confidence (not as a 5th axis) so the rest of the
     # routing matrix still shows up in confidence.log for the audit trail.
@@ -555,7 +569,7 @@ RETRY_EOF
     # _RALPH_BEAD_ID is set at the iter top from either the resumed
     # _RALPH_ACTIVE_BEAD or _ralph_bead_ready, so it always names the bead
     # the agent will work on. Same fix in the confidence=NONE branch below.
-    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_type=$_RALPH_BEAD_TYPE bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT${_RALPH_STALE_HEAD_FIELD} title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\" completed=\"$(_ralph_sanitize_log_field "$_RALPH_COMPLETED_SUMMARY")\"" >> "$_RALPH_CONFIDENCE_LOG"
+    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_type=$_RALPH_BEAD_TYPE bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT followup_ratio=${_RALPH_FOLLOWUP_NUMER:-0}/${_RALPH_FOLLOWUP_DENOM:-5}${_RALPH_STALE_HEAD_FIELD} title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\" completed=\"$(_ralph_sanitize_log_field "$_RALPH_COMPLETED_SUMMARY")\"" >> "$_RALPH_CONFIDENCE_LOG"
 
     if [[ "$_RALPH_AUTO_LAND" == "true" ]]; then
       echo "Auto-land: confidence=$_RALPH_CONFIDENCE, policy=$_RALPH_POLICY"

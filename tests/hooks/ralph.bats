@@ -73,12 +73,49 @@ teardown() {
   [ "$output" = "HIGH" ]
 }
 
-@test "compute_confidence: PASS + retry_count>0 downgrades to MEDIUM" {
-  # Any prior failure on this bead is a "the agent struggled" signal.
-  # Even a clean final state earns less trust than a first-try success.
-  run compute_confidence "PASS" 100 "false" "false" 1
+@test "compute_confidence: legacy 5-arg shape (retry_count int) is ignored, returns HIGH" {
+  # Retired axis: retry_count was the 5th positional in the prior shape and
+  # downgraded once when >0. Legacy callers (older test fixtures, downstream
+  # forks that haven't yet retired the param) still pass an integer like 5.
+  # The new 5th positional is recent_followup_ratio (decimal in [0, 1]) and
+  # values outside that range are treated as "no signal" — pinning that
+  # invariant from the legacy direction so a regression that drops the range
+  # check would surface as this test flipping to MEDIUM.
+  run compute_confidence "PASS" 100 "false" "false" 5
+  [ "$status" -eq 0 ]
+  [ "$output" = "HIGH" ]
+}
+
+@test "compute_confidence: PASS + saturation ratio at 0.6 boundary stays HIGH (3/5)" {
+  # Bracket-low side of the loop_saturation cut. Rule is strict >0.6, so
+  # 3/5 = 0.6 stays at the prevailing confidence. Pinning the boundary so a
+  # future `>` vs `>=` flip is caught mechanically (paired with the 0.8 test
+  # below). The runaway-loop signature is "the loop is operating on a fixed
+  # point of self-tightening reviews" — 3/5 is the threshold above which
+  # the diagnostic fires.
+  run compute_confidence "PASS" 100 "false" "false" 0.6
+  [ "$status" -eq 0 ]
+  [ "$output" = "HIGH" ]
+}
+
+@test "compute_confidence: PASS + saturation ratio just above cut downgrades to MEDIUM (4/5)" {
+  # Bracket-high side: 4/5 = 0.8 > 0.6 fires the loop_saturation axis.
+  # Paired with the 0.6 boundary test above, this pins the cut from both
+  # sides — exactly one of the two tests fails on a `>` vs `>=` flip.
+  run compute_confidence "PASS" 100 "false" "false" 0.8
   [ "$status" -eq 0 ]
   [ "$output" = "MEDIUM" ]
+}
+
+@test "compute_confidence: PASS + saturation ratio exactly at 0 (no follow-ups) stays HIGH" {
+  # Default-shape: ralph.sh passes 0 when no follow-ups in the last 5 closes
+  # OR when the AND-suppressor (Phase N impl: / integration- in window) fires.
+  # Either way the axis must not downgrade — this is the dominant case in a
+  # healthy loop. Adjacent to the legacy-arg test: 5 (legacy) and 0 (default)
+  # both stay HIGH but for different reasons (out-of-range vs. in-range-low).
+  run compute_confidence "PASS" 100 "false" "false" 0
+  [ "$status" -eq 0 ]
+  [ "$output" = "HIGH" ]
 }
 
 @test "compute_confidence: PASS + large diff downgrades to MEDIUM" {
@@ -886,6 +923,73 @@ EOF
 
   emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
   [[ "$emitted" != *"stale_head"* ]] || { echo "Got: $emitted"; return 1; }
+}
+
+# --- LOOP_SATURATION emission ------------------------------------------
+#
+# loop_saturation is the runtime detector for the runaway feedback loop
+# documented in docs/upstream-harness-improvements.md § 2026-04-29: a
+# fixed point of self-tightening reviews where consecutive `Phase N
+# follow-up:` beads close without any `Phase N impl:` or `integration-`
+# bead landing in the window. The compute_confidence axis downgrades the
+# verdict; the LOOP_SATURATION confidence.log line is the operator-facing
+# audit trail. Both must fire from the same trigger (ratio in [0,1] and
+# > 0.6) — splitting them would let one drift without the other.
+
+@test "ralph.sh confidence.log emits LOOP_SATURATION line when followup_ratio fires" {
+  # Extract the emit-block from ralph.sh and eval it with the ratio above
+  # the cut. The whole if-block (predicate + echo) is evaluated so a
+  # regression that loosens the predicate to `>=` or drops the range
+  # check would surface here.
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  emit_block=$(awk '
+    /^[[:space:]]*if \[\[ "\$\(awk -v r="\$_RALPH_FOLLOWUP_RATIO/ { in_blk=1 }
+    in_blk { print }
+    in_blk && /^[[:space:]]*fi[[:space:]]*$/ { exit }
+  ' "$ralph")
+  [ -n "$emit_block" ]
+
+  _RALPH_I=1
+  _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_FOLLOWUP_RATIO=0.8
+  _RALPH_FOLLOWUP_NUMER=4
+  _RALPH_FOLLOWUP_DENOM=5
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+
+  eval "$emit_block"
+
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"LOOP_SATURATION"* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *"followup_ratio=4/5"* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *"bead=agent-template-xyz"* ]] || { echo "Got: $emitted"; return 1; }
+}
+
+@test "ralph.sh confidence.log omits LOOP_SATURATION line when followup_ratio is at/below cut" {
+  # Complement: ratio at or below the 0.6 cut must not fire. Pinning this
+  # silence is what lets a future audit trust the LOOP_SATURATION substring
+  # as the signal — a regression that flips `>` to `>=` would surface here
+  # (0.6 would start firing).
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  emit_block=$(awk '
+    /^[[:space:]]*if \[\[ "\$\(awk -v r="\$_RALPH_FOLLOWUP_RATIO/ { in_blk=1 }
+    in_blk { print }
+    in_blk && /^[[:space:]]*fi[[:space:]]*$/ { exit }
+  ' "$ralph")
+  [ -n "$emit_block" ]
+
+  _RALPH_I=1
+  _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_FOLLOWUP_RATIO=0.6
+  _RALPH_FOLLOWUP_NUMER=3
+  _RALPH_FOLLOWUP_DENOM=5
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+
+  eval "$emit_block"
+
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" != *"LOOP_SATURATION"* ]] || { echo "Got: $emitted"; return 1; }
 }
 
 # --- confidence.log bead-id source -------------------------------------

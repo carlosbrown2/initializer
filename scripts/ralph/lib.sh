@@ -57,57 +57,49 @@ run_gate() {
 
 # Compute confidence from observable signals about the just-closed bead.
 #
-# Replaces the prior parse_confidence / parse_confidence_bead_done pair
-# that extracted an agent-emitted `<confidence>` tag. The tag was a
-# self-grade: the model's prediction about how likely its work was to
-# survive the gate, not a measurement of that property. This function
-# reads the real signals (bash-observed gate result, commit diff size,
-# whether risky paths were touched, whether the bead needed retries) and
-# returns a deterministic verdict — reproducible, testable, not spoofable
-# by rationale text.
+# Replaces the prior parse_confidence / parse_confidence_bead_done pair that
+# extracted an agent-emitted `<confidence>` tag. Reads bash-observed gate
+# result, commit diff size, whether risky paths were touched, and whether
+# the loop is saturating on narrowing-shape follow-ups; returns a
+# deterministic verdict the agent cannot spoof.
 #
-# Args (all passed as strings; numeric ones are compared with -gt):
-#   gate_result      — "PASS" auto-lands; anything else (FAIL, SKIPPED, "")
-#                      returns LOW immediately. Fail-closed: unknown gate
-#                      state is treated as red.
-#   diff_lines       — total lines added+deleted in the bead's commit
-#                      (git show --numstat HEAD summed). Defaults to 0 so
-#                      callers that forget to pass a value do not crash.
-#   touched_hooks    — "true" if the commit changed anything under
-#                      scripts/hooks/; else "false". Changing the
-#                      enforcement mechanism itself warrants more scrutiny.
-#   touched_claude_md — "true" if the commit changed CLAUDE.md; else
-#                      "false". Changing project rules warrants more scrutiny.
-#   retry_count      — fail_count going into this iteration. >0 means the
-#                      agent struggled on prior attempts — less confidence
-#                      that the final state is right.
+# Args:
+#   gate_result      — "PASS" auto-lands; anything else returns LOW (fail-
+#                      closed on unknown gate state).
+#   diff_lines       — git show --numstat HEAD summed. Default 0.
+#   touched_hooks    — "true" if HEAD touched scripts/hooks/.
+#   touched_claude_md — "true" if HEAD touched CLAUDE.md outside
+#                       `## Discovered Patterns`.
+#   recent_followup_ratio — decimal in [0, 1]: fraction of last 5 closed
+#                      beads with `Phase % follow-up:` titles. The
+#                      AND-suppressor (no `Phase N impl:` or `integration-`
+#                      close in the same window) is baked in by the caller
+#                      (ralph.sh) by passing 0 when suppressed. Out-of-range
+#                      values (e.g., a stale 5-arg call passing the legacy
+#                      retry_count integer) are treated as no-signal and
+#                      do not fire — pins the "ignore legacy 5-arg shape"
+#                      invariant under bracket tests.
 #
-# Verdict:
-#   gate != "PASS"   → LOW (terminal)
-#   otherwise start at HIGH and downgrade one level for each of:
-#     retry_count > 0
-#     diff_lines > 500
-#     touched_hooks == "true"
-#     touched_claude_md == "true"
-#   0 downgrades → HIGH; 1 → MEDIUM; 2+ → LOW.
+# Verdict: gate != "PASS" → LOW; else HIGH downgraded one level per axis:
+# diff_lines>500, touched_hooks, touched_claude_md, ratio in [0,1] AND >0.6.
+# 0 downgrades → HIGH; 1 → MEDIUM; 2+ → LOW.
 #
-# The 500-line threshold is a heuristic baseline, not a contract: it
-# represents "enough surface area that a quiet regression could hide" for
-# the template's own bead-size distribution. Downstream projects bootstrapped
-# from this template are responsible for calibrating the threshold against
-# their own commit-size distribution — recorded confidence.log iters with
-# bead_done=true are the input. If signal clusters on one side of the cut
-# (e.g., most BEAD_DONE iters cross 500 lines for legitimate reasons, so the
-# axis fires on normal cadence rather than real risk), raise the value in a
-# follow-up bead; pair the change with a bracket test update so the new cut
-# point is pinned on both sides. The axes are kept narrow on purpose; new
-# downgrade axes should earn a bats test that covers them in isolation.
+# Net axis count preserved at 4 (cross-cutting invariant #3 in
+# docs/upstream-harness-improvements.md). retry_count retired in this same
+# change (fires on normal cadence after silent-fail iter, no correctness
+# signal once gate=PASS); loop_saturation replaces it as the runtime
+# detector for the runaway review feedback loop.
+#
+# Both thresholds (500 lines, 0.6 ratio) are heuristics calibrated against
+# the template's own confidence.log distribution. Downstream projects
+# recalibrate against their own iters; pair every threshold change with
+# bracket-test updates pinning the new cut from both sides.
 compute_confidence() {
   local gate_result="$1"
   local diff_lines="${2:-0}"
   local touched_hooks="${3:-false}"
   local touched_claude_md="${4:-false}"
-  local retry_count="${5:-0}"
+  local recent_followup_ratio="${5:-0}"
 
   if [[ "$gate_result" != "PASS" ]]; then
     echo "LOW"
@@ -115,10 +107,14 @@ compute_confidence() {
   fi
 
   local downgrades=0
-  [[ "$retry_count" -gt 0 ]] && downgrades=$((downgrades + 1))
   [[ "$diff_lines" -gt 500 ]] && downgrades=$((downgrades + 1))
   [[ "$touched_hooks" == "true" ]] && downgrades=$((downgrades + 1))
   [[ "$touched_claude_md" == "true" ]] && downgrades=$((downgrades + 1))
+  # loop_saturation: the ratio is a decimal in [0, 1]; out-of-range values
+  # (e.g., a stale 5-arg call passing the legacy retry_count integer) are
+  # treated as "no signal" and do not fire. awk handles the float comparison
+  # bash cannot (bash's [[ ]] integer ops would mis-evaluate 0.8 vs 0.6).
+  [[ "$(awk -v r="$recent_followup_ratio" 'BEGIN { print (r >= 0 && r <= 1 && r > 0.6) ? 1 : 0 }')" == "1" ]] && downgrades=$((downgrades + 1))
 
   case $downgrades in
     0) echo "HIGH" ;;
