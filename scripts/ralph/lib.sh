@@ -284,6 +284,65 @@ claude_md_touched_outside_patterns() {
   return 1
 }
 
+# Title regex for governance / audit beads — Observe / Audit / Decide /
+# Triage / Review the loop. These name the operator's own meta-questions
+# (audit instructions filed against the loop itself); when one sits in
+# `bd ready` indefinitely the loop has been ignoring its own warning siren.
+# Single source of truth so the surfacing helper in scripts/ralph/ralph.sh
+# and the predicate below cannot drift on what counts as governance.
+GOVERNANCE_TITLE_REGEX='^(Observe|Audit|Decide|Triage|Review the loop)'
+
+# Shared jq fragment: convert a `bd` ISO-8601 timestamp string to a UTC
+# epoch integer. bd emits offsets like `2026-04-30T07:19:57.075423-06:00`,
+# but `fromdateiso8601` only accepts the `Z` (UTC) suffix — passing an
+# offset-suffixed string crashes the filter. This def strips the
+# fractional seconds, captures the `±HH:MM` offset, parses the naive
+# stamp as UTC, then adjusts. Both governance_bead_max_age_days below and
+# scripts/ralph/ralph.sh's _ralph_surface_stale_governance prepend this
+# def to their jq programs so a future bd timestamp shape change lands
+# in one place. Single-quoted: $m / $naive / $off are jq vars, not bash
+# expansions — shellcheck SC2016 disabled because that's the design.
+# shellcheck disable=SC2016
+BD_DATE_TO_EPOCH_JQ_DEF='def bd_date_to_epoch: sub("\\.[0-9]+"; "") | if test("Z$") then fromdateiso8601 else capture("(?<dt>.+)(?<sign>[+-])(?<oh>[0-9]{2}):(?<om>[0-9]{2})$") as $m | (($m.dt + "Z") | fromdateiso8601) as $naive | (($m.oh | tonumber) * 3600 + ($m.om | tonumber) * 60) as $off | if $m.sign == "+" then $naive - $off else $naive + $off end end;'
+
+# Predicate: returns 0 (truthy) if any governance bead in the input JSON
+# has been open for more than 7 days; 1 otherwise. ralph.sh routes truthy
+# by forcing the just-computed confidence to LOW for the iteration —
+# HIGH on whatever just closed while a >1-week audit instruction is
+# unanswered would be misleading regardless of the gate's verdict.
+#
+# Args:
+#   json       — bd list --status=open --json output. Empty / malformed
+#                input returns 1 (no governance bead found is benign).
+#   now_epoch  — current time as Unix epoch seconds. Defaults to date +%s.
+#                Tests pass a fixed value to keep the cut deterministic.
+#
+# Returns:
+#   0  oldest governance bead age (in integer days) > 7
+#   1  no matching bead, or oldest age ≤ 7
+#
+# The 7-day cut is the calibration parameter; ≤7d stays at the prevailing
+# confidence, >7d forces LOW. Bracket tests at 7d (stays) and 8d (forces)
+# pin the cut so a future `>` vs `>=` flip is caught mechanically. Integer
+# days via floor: 7d23h reads as age=7 (≤7), 8d0h as age=8 (>7).
+governance_bead_max_age_days() {
+  local json="${1:-}"
+  local now_epoch="${2:-$(date +%s)}"
+  [[ -n "$json" ]] || return 1
+  local oldest_epoch
+  oldest_epoch=$(jq -r --arg re "$GOVERNANCE_TITLE_REGEX" "
+    $BD_DATE_TO_EPOCH_JQ_DEF
+    [.[]
+      | select(.title | test(\$re))
+      | (.created_at | bd_date_to_epoch)
+    ] | if length == 0 then empty else min end
+  " <<<"$json" 2>/dev/null) || return 1
+  [[ -n "$oldest_epoch" ]] || return 1
+  local age_days=$(( (now_epoch - oldest_epoch) / 86400 ))
+  (( age_days > 7 )) && return 0
+  return 1
+}
+
 # Pure retry-state transition. Given the just-failed bead id, the prior
 # last-failed bead id, the current fail count, and max retries, print the
 # new tuple "NEW_COUNT|NEW_LAST|ACTION" to stdout. Action is one of:

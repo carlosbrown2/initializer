@@ -26,9 +26,16 @@ setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
 }
 
-@test "scripts/ralph/ralph.sh under per-file line cap (550)" {
+@test "scripts/ralph/ralph.sh under per-file line cap (600)" {
+  # Cap raised 550 → 600 by agent-template-ebh: the runaway-loop entry's
+  # Change 4 (governance-bead surfacing + >7d force-LOW) added the
+  # _ralph_surface_stale_governance helper, the per-iter bd-list snapshot,
+  # and the post-compute_confidence override. The prior cap was calibrated
+  # at 549 (zero headroom) so even a single-feature add forces the raise;
+  # documented per the cap-raise discipline above. Future raises pair the
+  # increment with the bead notes in scripts/ralph/archive.txt.
   count=$(wc -l < "$PROJECT_ROOT/scripts/ralph/ralph.sh")
-  [ "$count" -le 550 ]
+  [ "$count" -le 600 ]
 }
 
 @test "scripts/ralph/lib.sh under per-file line cap (400)" {

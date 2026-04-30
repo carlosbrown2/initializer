@@ -32,8 +32,10 @@ _ralph_cleanup() {
   unset _RALPH_HEAD_AT_ITER_START _RALPH_HEAD_AT_BEAD_DONE
   unset _RALPH_STALE_HEAD _RALPH_STALE_HEAD_FIELD
   unset _RALPH_FAILED_BEAD _RALPH_RETRY_STATE _RALPH_RETRY_REST _RALPH_RETRY_ACTION
+  unset _RALPH_GOVERNANCE_JSON
   unset -f _ralph_cleanup _ralph_bead_in_progress _ralph_bead_ready _ralph_bead_title
   unset -f _ralph_load_bead_meta _ralph_sanitize_log_field
+  unset -f _ralph_surface_stale_governance
 }
 
 # --- Bead id extractors ----------------------------------------------------
@@ -113,6 +115,29 @@ _ralph_sanitize_log_field() {
     s="${s:0:157}..."
   fi
   printf '%s' "$s"
+}
+
+# Surface stale (>3d) governance beads above the iter banner so the
+# operator sees the loop's own audit instructions before the agent claims
+# its next bead. Pure surfacing — the >7d hard force-LOW rule lives in
+# governance_bead_max_age_days (lib.sh). bd / jq failures silently no-op:
+# this is best-effort visibility, not a correctness gate.
+_ralph_surface_stale_governance() {
+  local json="$1"
+  [[ -n "$json" ]] || return 0
+  local lines
+  lines=$(jq -r --arg re "$GOVERNANCE_TITLE_REGEX" --argjson now "$(date +%s)" "
+    $BD_DATE_TO_EPOCH_JQ_DEF
+    [.[]
+      | select(.title | test(\$re))
+      | ((\$now - (.created_at | bd_date_to_epoch)) / 86400 | floor) as \$age
+      | select(\$age > 3)
+      | \"  \(.id) (\(\$age)d) \(.title)\"
+    ] | .[]
+  " <<<"$json" 2>/dev/null) || return 0
+  [[ -n "$lines" ]] || return 0
+  echo "⚠ Stale governance:"
+  echo "$lines"
 }
 
 # --- Dependency checks ---
@@ -294,6 +319,12 @@ RETRY_EOF
   else
     echo "No beads ready — agent will check and emit COMPLETE."
   fi
+  # Snapshot the open-bead list once per iter; both the surfacing helper
+  # above (>3d visibility) and the >7d force-LOW check below read from
+  # the same JSON so a bead the agent closes mid-iter cannot make the
+  # governance routing disagree with what the operator was just shown.
+  _RALPH_GOVERNANCE_JSON=$(bd list --status=open --json 2>/dev/null || echo "[]")
+  _ralph_surface_stale_governance "$_RALPH_GOVERNANCE_JSON"
   echo "---------------------------------------------------------------"
 
   # Snapshot HEAD before the agent runs. compute_head_unchanged_for_bead_done
@@ -497,6 +528,12 @@ RETRY_EOF
       "$_RALPH_TOUCHED_HOOKS" \
       "$_RALPH_TOUCHED_CLAUDE_MD" \
       "$_RALPH_FAIL_COUNT_AT_ITER_START")
+    # Force LOW when a governance bead has aged past the cut. Override
+    # post-compute_confidence (not as a 5th axis) so the rest of the
+    # routing matrix still shows up in confidence.log for the audit trail.
+    if governance_bead_max_age_days "$_RALPH_GOVERNANCE_JSON"; then
+      _RALPH_CONFIDENCE="LOW"
+    fi
   fi
   # Build the optional `stale_head=true` field once so both log lines below
   # carry the same shape. Emitted only on stale-HEAD iters so a future audit

@@ -1349,16 +1349,224 @@ EOF
 @test "_ralph_cleanup unsets the new globals" {
   # The cleanup function must `unset` every new _RALPH_ var so sourcing
   # ralph.sh repeatedly (e.g., in an outer test harness) does not leak
-  # stale type/title/desc/summary from a prior run into the next.
+  # stale type/title/desc/summary/governance-json from a prior run into the next.
   _load_ralph_helpers
   _RALPH_HAD_NOUNSET=0
   _RALPH_BEAD_TYPE="impl"
   _RALPH_BEAD_DESCRIPTION="X"
   _RALPH_COMPLETED_SUMMARY="Y"
+  _RALPH_GOVERNANCE_JSON='[]'
   _ralph_cleanup
   [ -z "${_RALPH_BEAD_TYPE:-}" ]
   [ -z "${_RALPH_BEAD_DESCRIPTION:-}" ]
   [ -z "${_RALPH_COMPLETED_SUMMARY:-}" ]
+  [ -z "${_RALPH_GOVERNANCE_JSON:-}" ]
+}
+
+# --- governance_bead_max_age_days + _ralph_surface_stale_governance ----
+#
+# Bead agent-template-ebh: governance beads (Observe / Audit / Decide /
+# Triage / Review the loop) sit in `bd ready` indefinitely because they
+# get the same priority as module work. The fix surfaces them above the
+# iter banner at >3d and forces compute_confidence's verdict to LOW
+# at >7d. Two helpers, one shared bd-list snapshot:
+#   - governance_bead_max_age_days (lib.sh)  : pure predicate, takes JSON.
+#   - _ralph_surface_stale_governance (ralph.sh) : pure surfacing helper.
+# The 7d boundary is bracketed at 7d (stays) and 8d (forces) so a future
+# `>` vs `>=` flip in the predicate is caught mechanically.
+
+# Build an ISO-8601 timestamp for `now - days*86400` seconds. Uses
+# `date -ur SECONDS +FORMAT` which is portable across BSD (macOS) and
+# GNU date — `-r` reads epoch seconds, `-u` outputs UTC, the explicit
+# `+00:00` suffix avoids `date`'s `+%z` BSD/GNU-formatting drift.
+_iso_n_days_ago() {
+  local now_epoch="$1"
+  local days="$2"
+  date -ur "$(( now_epoch - days * 86400 ))" +%Y-%m-%dT%H:%M:%S+00:00
+}
+
+@test "governance_bead_max_age_days: empty input returns 1 (no governance is benign)" {
+  # Defensive: a bd-call failure surfaces as empty input. A truthy return
+  # would force LOW on every iter where bd is unreachable — false-positive
+  # confidence downgrade. Fail-closed in the other direction here.
+  run governance_bead_max_age_days ""
+  [ "$status" -eq 1 ]
+}
+
+@test "governance_bead_max_age_days: empty array returns 1 (no matching bead)" {
+  # No open beads at all → no governance is stale.
+  run governance_bead_max_age_days "[]"
+  [ "$status" -eq 1 ]
+}
+
+@test "governance_bead_max_age_days: non-governance bead (Phase 3 impl:) is ignored" {
+  # The whole point of the title regex is to filter module work out.
+  # A Phase 3 impl: bead at 30 days old must NOT trigger the override.
+  local now=1745000000
+  local ts; ts=$(_iso_n_days_ago "$now" 30)
+  local json
+  json='[{"id":"agent-template-aaa","title":"Phase 3 impl: do the thing","created_at":"'$ts'"}]'
+  run governance_bead_max_age_days "$json" "$now"
+  [ "$status" -eq 1 ]
+}
+
+@test "governance_bead_max_age_days: governance bead at exactly 7 days returns 1 (≤7d boundary stays)" {
+  # Bracket-low side of the cut. 7d exactly is age=7; the rule is strict
+  # >7, so this case stays at the prevailing confidence. Pinning the
+  # boundary so a future `>` vs `>=` flip is caught mechanically (paired
+  # with the 8d test below).
+  local now=1745000000
+  local ts; ts=$(_iso_n_days_ago "$now" 7)
+  local json
+  json='[{"id":"agent-template-uq6","title":"Observe ralph loop","created_at":"'$ts'"}]'
+  run governance_bead_max_age_days "$json" "$now"
+  [ "$status" -eq 1 ]
+}
+
+@test "governance_bead_max_age_days: governance bead at exactly 8 days returns 0 (>7d forces)" {
+  # Bracket-high side of the cut. 8d exactly is age=8 > 7; force LOW.
+  local now=1745000000
+  local ts; ts=$(_iso_n_days_ago "$now" 8)
+  local json
+  json='[{"id":"agent-template-uq6","title":"Observe ralph loop","created_at":"'$ts'"}]'
+  run governance_bead_max_age_days "$json" "$now"
+  [ "$status" -eq 0 ]
+}
+
+@test "governance_bead_max_age_days: matches every governance title prefix at >7d" {
+  # The regex is GOVERNANCE_TITLE_REGEX. Any title that starts with one
+  # of Observe / Audit / Decide / Triage / Review the loop is a governance
+  # bead. A regression that drops one of the prefixes silently re-opens
+  # that class of audit instruction to indefinite staleness.
+  local now=1745000000
+  local ts; ts=$(_iso_n_days_ago "$now" 8)
+  for prefix in "Observe ralph loop" "Audit register integrity" "Decide on research-phase split" "Triage bead-flow staleness" "Review the loop for invariant drift"; do
+    local json
+    json='[{"id":"agent-template-xxx","title":"'$prefix'","created_at":"'$ts'"}]'
+    run governance_bead_max_age_days "$json" "$now"
+    [ "$status" -eq 0 ] || { echo "Failed prefix: $prefix" >&2; return 1; }
+  done
+}
+
+@test "governance_bead_max_age_days: oldest of multiple matching beads decides" {
+  # Mix one young (3d) and one old (10d) governance bead with one young
+  # non-governance bead. Predicate must pick the oldest matching bead,
+  # not the newest one or a non-matching one. A bug that read .[0] without
+  # sorting would give different verdicts depending on bd's list order.
+  local now=1745000000
+  local young; young=$(_iso_n_days_ago "$now" 3)
+  local old; old=$(_iso_n_days_ago "$now" 10)
+  local json
+  json='[
+    {"id":"a","title":"Audit recent","created_at":"'$young'"},
+    {"id":"b","title":"Phase 3 impl: foo","created_at":"'$young'"},
+    {"id":"c","title":"Observe old","created_at":"'$old'"}
+  ]'
+  run governance_bead_max_age_days "$json" "$now"
+  [ "$status" -eq 0 ]
+}
+
+@test "_ralph_surface_stale_governance: prints under header for >3d matching bead" {
+  # The visibility half: the operator sees the stale bead before the
+  # agent claims its next module bead. Output shape is
+  # `⚠ Stale governance:` header followed by indented `id (Nd) title`.
+  _load_ralph_helpers
+  source "$PROJECT_ROOT/scripts/ralph/lib.sh"
+  local now; now=$(date +%s)
+  local ts; ts=$(_iso_n_days_ago "$now" 5)
+  local json
+  json='[{"id":"agent-template-uq6","title":"Observe ralph loop","created_at":"'$ts'"}]'
+  run _ralph_surface_stale_governance "$json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"⚠ Stale governance:"* ]] || { echo "Got: $output" >&2; return 1; }
+  [[ "$output" == *"agent-template-uq6 (5d) Observe ralph loop"* ]] || { echo "Got: $output" >&2; return 1; }
+}
+
+@test "_ralph_surface_stale_governance: silent on ≤3d matching bead" {
+  # Surfacing kicks in at >3d (operator's first warning), separate from
+  # the >7d hard force-LOW rule. A 2d-old governance bead is recent and
+  # not yet stale; printing it would dilute the signal.
+  _load_ralph_helpers
+  source "$PROJECT_ROOT/scripts/ralph/lib.sh"
+  local now; now=$(date +%s)
+  local ts; ts=$(_iso_n_days_ago "$now" 2)
+  local json
+  json='[{"id":"agent-template-xxx","title":"Audit recent","created_at":"'$ts'"}]'
+  run _ralph_surface_stale_governance "$json"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "_ralph_surface_stale_governance: silent on non-matching bead at >3d" {
+  # Phase 3 impl: bead at 30 days is not governance. Visibility surface
+  # must not list module work — that's what the existing iter banner is for.
+  _load_ralph_helpers
+  source "$PROJECT_ROOT/scripts/ralph/lib.sh"
+  local now; now=$(date +%s)
+  local ts; ts=$(_iso_n_days_ago "$now" 30)
+  local json
+  json='[{"id":"agent-template-yyy","title":"Phase 3 impl: do the thing","created_at":"'$ts'"}]'
+  run _ralph_surface_stale_governance "$json"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "_ralph_surface_stale_governance: silent on empty input (bd unreachable)" {
+  # Best-effort visibility: bd-call failure produces empty input, helper
+  # silently no-ops. A spurious header printed on every empty-input call
+  # would train the operator to ignore the warning siren.
+  _load_ralph_helpers
+  source "$PROJECT_ROOT/scripts/ralph/lib.sh"
+  run _ralph_surface_stale_governance ""
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "ralph.sh forces _RALPH_CONFIDENCE=LOW when governance bead predicate is truthy" {
+  # Integration test: extract the post-compute_confidence override block
+  # from ralph.sh and eval it under state where compute_confidence has
+  # just returned HIGH and the governance JSON carries an 8d-old Observe
+  # bead. A regression that deletes the override fails this test (the
+  # block disappears or no longer references the predicate).
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*if governance_bead_max_age_days/ { capture=1 }
+    capture { print }
+    capture && /^[[:space:]]*fi[[:space:]]*$/ { exit }
+  ' "$ralph")
+  [ -n "$block" ] || { echo "override block not found in ralph.sh" >&2; return 1; }
+
+  source "$PROJECT_ROOT/scripts/ralph/lib.sh"
+
+  local now; now=$(date +%s)
+  local ts; ts=$(_iso_n_days_ago "$now" 8)
+  _RALPH_GOVERNANCE_JSON='[{"id":"agent-template-uq6","title":"Observe ralph loop","created_at":"'$ts'"}]'
+  _RALPH_CONFIDENCE="HIGH"
+
+  eval "$block"
+  [ "$_RALPH_CONFIDENCE" = "LOW" ]
+}
+
+@test "ralph.sh leaves _RALPH_CONFIDENCE unchanged when governance predicate is falsy" {
+  # Complement to the force-LOW test: a polarity flip (e.g., dropping the
+  # `if`, or wiring to a negated predicate) would override every BEAD_DONE
+  # iter to LOW regardless of governance state. With this test in place
+  # the regression surfaces as "every iter is LOW now."
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*if governance_bead_max_age_days/ { capture=1 }
+    capture { print }
+    capture && /^[[:space:]]*fi[[:space:]]*$/ { exit }
+  ' "$ralph")
+  [ -n "$block" ]
+
+  source "$PROJECT_ROOT/scripts/ralph/lib.sh"
+
+  _RALPH_GOVERNANCE_JSON='[]'
+  _RALPH_CONFIDENCE="HIGH"
+
+  eval "$block"
+  [ "$_RALPH_CONFIDENCE" = "HIGH" ]
 }
 
 # --- BEAD_ID_REGEX drift --------------------------------------------------
