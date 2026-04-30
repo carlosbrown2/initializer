@@ -76,23 +76,22 @@ _ralph_bead_title() {
 # from a single `bd show <id> --json` call (three separate calls would
 # triple per-iter shell-out cost on a slow bd). Type is the logical loop
 # taxonomy parsed from the title prefix; falls back to bd's `.issue_type`
-# when no impl/review/pare/compound/research keyword matches.
+# when no impl/review/pare/compound/research keyword matches. The keyword
+# loop (vs single regex+BASH_REMATCH[2]) is for zsh-source compat: zsh
+# does not populate BASH_REMATCH by default, so capture-group extraction
+# would crash under `set -u` when the script is sourced from a zsh shell.
 _ralph_load_bead_meta() {
-  local id="$1"
-  _RALPH_BEAD_TYPE=""
-  _RALPH_BEAD_TITLE=""
-  _RALPH_BEAD_DESCRIPTION=""
-  local j issue_type
+  local id="$1" j issue_type _kw
+  _RALPH_BEAD_TYPE=""; _RALPH_BEAD_TITLE=""; _RALPH_BEAD_DESCRIPTION=""
   j=$(bd show "$id" --json 2>/dev/null) || return 0
   [ -n "$j" ] || return 0
   _RALPH_BEAD_TITLE=$(jq -r '(if type == "array" then .[0] else . end).title // empty' <<<"$j" 2>/dev/null) || _RALPH_BEAD_TITLE=""
   _RALPH_BEAD_DESCRIPTION=$(jq -r '(if type == "array" then .[0] else . end).description // empty' <<<"$j" 2>/dev/null) || _RALPH_BEAD_DESCRIPTION=""
   issue_type=$(jq -r '(if type == "array" then .[0] else . end).issue_type // empty' <<<"$j" 2>/dev/null) || issue_type=""
-  if [[ "$_RALPH_BEAD_TITLE" =~ (^|[[:space:]])(impl|review|pare|pare-down|compound|research)[[:space:]]*: ]]; then
-    _RALPH_BEAD_TYPE="${BASH_REMATCH[2]}"
-  else
-    _RALPH_BEAD_TYPE="$issue_type"
-  fi
+  _RALPH_BEAD_TYPE="$issue_type"
+  for _kw in pare-down impl review pare compound research; do
+    if [[ "$_RALPH_BEAD_TITLE" =~ (^|[[:space:]])${_kw}[[:space:]]*: ]]; then _RALPH_BEAD_TYPE="$_kw"; break; fi
+  done
 }
 
 # Normalize free-form text (titles, commit subjects, descriptions) for the
