@@ -28,6 +28,8 @@ _ralph_cleanup() {
   unset _RALPH_FAIL_COUNT_AT_ITER_START
   unset _RALPH_DIFF_LINES _RALPH_TOUCHED_HOOKS _RALPH_TOUCHED_CLAUDE_MD
   unset _RALPH_HEAD_FILES
+  unset _RALPH_HEAD_AT_ITER_START _RALPH_HEAD_AT_BEAD_DONE
+  unset _RALPH_STALE_HEAD _RALPH_STALE_HEAD_FIELD
   unset _RALPH_FAILED_BEAD _RALPH_RETRY_STATE _RALPH_RETRY_REST _RALPH_RETRY_ACTION
   unset -f _ralph_cleanup _ralph_bead_in_progress _ralph_bead_ready _ralph_bead_title
 }
@@ -241,6 +243,15 @@ RETRY_EOF
   fi
   echo "---------------------------------------------------------------"
 
+  # Snapshot HEAD before the agent runs. compute_head_unchanged_for_bead_done
+  # (lib.sh) compares this against the post-iter HEAD on BEAD_DONE detection
+  # to catch a BEAD_DONE without a new commit — every per-iter signal below
+  # (diff_lines, touched_hooks, touched_claude_md) reads HEAD, so a stale-
+  # HEAD iter would silently grade the prior bead's commit. The empty-string
+  # fallback handles a pre-first-commit repo (rev-parse exits non-zero) so
+  # `set -u` does not crash the loop on a fresh checkout.
+  _RALPH_HEAD_AT_ITER_START=$(git -C "$_RALPH_PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+
   # Run the selected tool with the ralph prompt
   if [[ "$_RALPH_TOOL" == "amp" ]]; then
     _RALPH_OUTPUT=$(amp --dangerously-allow-all < "$_RALPH_PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
@@ -263,13 +274,27 @@ RETRY_EOF
 
   # --- Exit signal routing ---
   _RALPH_BEAD_DONE=false
+  _RALPH_STALE_HEAD=false
 
   if echo "$_RALPH_OUTPUT" | grep -q "<promise>BEAD_DONE</promise>"; then
     _RALPH_BEAD_DONE=true
     _RALPH_FAIL_COUNT=0
     _RALPH_LAST_FAILED_BEAD=""
     rm -f "$_RALPH_RETRY_STATE_FILE"
-    echo "Bead completed successfully at iteration $_RALPH_I."
+
+    # Stale-HEAD check: agent emitted BEAD_DONE — did HEAD actually move?
+    # If not, every per-iter signal in the confidence block below would
+    # grade the prior bead's commit. compute_head_unchanged_for_bead_done
+    # (lib.sh) returns 0 when pre == post; we record _RALPH_STALE_HEAD=true
+    # for the gate-result block to act on and the confidence.log line to
+    # surface as `stale_head=true` for future audits.
+    _RALPH_HEAD_AT_BEAD_DONE=$(git -C "$_RALPH_PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+    if compute_head_unchanged_for_bead_done "$_RALPH_HEAD_AT_ITER_START" "$_RALPH_HEAD_AT_BEAD_DONE"; then
+      _RALPH_STALE_HEAD=true
+      echo "Stale HEAD detected: BEAD_DONE emitted at iteration $_RALPH_I without a new commit."
+    else
+      echo "Bead completed successfully at iteration $_RALPH_I."
+    fi
 
   elif echo "$_RALPH_OUTPUT" | grep -q "<promise>BLOCKED</promise>"; then
     _RALPH_BLOCKED_REASON=$(echo "$_RALPH_OUTPUT" | sed -n 's/.*<blocked-reason>\(.*\)<\/blocked-reason>.*/\1/p' | head -1)
@@ -357,7 +382,15 @@ RETRY_EOF
   # just removes a misleading informational artifact.
   _RALPH_GATE_RESULT="skipped"
   if [[ "$_RALPH_BEAD_DONE" == "true" ]]; then
-    if run_gate "$_RALPH_GATE_CMD" "$_RALPH_PROJECT_ROOT/.last-gate-result"; then
+    if [[ "$_RALPH_STALE_HEAD" == "true" ]]; then
+      # Stale-HEAD BEAD_DONE: HEAD did not move during the iter, so the gate
+      # would grade the prior bead's tree. Skip the gate run and write FAIL
+      # directly — pairing the detection (lib.sh helper) with the consequence
+      # (confidence routes to LOW via gate_result=FAIL) here, where the rest
+      # of compute_confidence's inputs are in scope.
+      printf 'FAIL\n' > "$_RALPH_PROJECT_ROOT/.last-gate-result"
+      _RALPH_GATE_RESULT="FAIL"
+    elif run_gate "$_RALPH_GATE_CMD" "$_RALPH_PROJECT_ROOT/.last-gate-result"; then
       _RALPH_GATE_RESULT="PASS"
     else
       _RALPH_GATE_RESULT="FAIL"
@@ -400,6 +433,14 @@ RETRY_EOF
       "$_RALPH_TOUCHED_CLAUDE_MD" \
       "$_RALPH_FAIL_COUNT_AT_ITER_START")
   fi
+  # Build the optional `stale_head=true` field once so both log lines below
+  # carry the same shape. Emitted only on stale-HEAD iters so a future audit
+  # can `grep stale_head=true confidence.log` directly without false hits.
+  _RALPH_STALE_HEAD_FIELD=""
+  if [[ "$_RALPH_STALE_HEAD" == "true" ]]; then
+    _RALPH_STALE_HEAD_FIELD=" stale_head=true"
+  fi
+
   if [[ -n "$_RALPH_CONFIDENCE" ]]; then
     _RALPH_POLICY=$(read_auto_land_policy "$_RALPH_PROJECT_ROOT/CLAUDE.md")
     _RALPH_AUTO_LAND=$(should_auto_land "$_RALPH_CONFIDENCE" "$_RALPH_POLICY")
@@ -412,7 +453,7 @@ RETRY_EOF
     # _RALPH_BEAD_ID is set at the iter top from either the resumed
     # _RALPH_ACTIVE_BEAD or _ralph_bead_ready, so it always names the bead
     # the agent will work on. Same fix in the confidence=NONE branch below.
-    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT" >> "$_RALPH_CONFIDENCE_LOG"
+    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT${_RALPH_STALE_HEAD_FIELD}" >> "$_RALPH_CONFIDENCE_LOG"
 
     if [[ "$_RALPH_AUTO_LAND" == "true" ]]; then
       echo "Auto-land: confidence=$_RALPH_CONFIDENCE, policy=$_RALPH_POLICY"
@@ -422,7 +463,7 @@ RETRY_EOF
       read -r
     fi
   else
-    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_done=$_RALPH_BEAD_DONE confidence=NONE (no signal detected) gate_result=$_RALPH_GATE_RESULT" >> "$_RALPH_CONFIDENCE_LOG"
+    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_done=$_RALPH_BEAD_DONE confidence=NONE (no signal detected) gate_result=$_RALPH_GATE_RESULT${_RALPH_STALE_HEAD_FIELD}" >> "$_RALPH_CONFIDENCE_LOG"
   fi
 
   echo "Iteration $_RALPH_I complete. Continuing..."

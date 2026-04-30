@@ -490,6 +490,181 @@ EOF
   [ "$(cat "$result_file")" = "FAIL" ]
 }
 
+# --- compute_head_unchanged_for_bead_done -------------------------------
+#
+# Bead agent-template-nvd: per-iter measurements (diff_lines / touched_hooks /
+# touched_claude_md) read HEAD without verifying HEAD has moved since iter
+# start. A BEAD_DONE iter that did not commit silently grades the prior
+# bead's diff and credits the result to the wrong work. The helper is the
+# detection layer; ralph.sh forces gate_result=FAIL when it returns 0.
+
+@test "compute_head_unchanged_for_bead_done: pre==post returns 0 (HEAD did not move)" {
+  # The contract: identical SHAs mean BEAD_DONE landed without a commit.
+  # Returns 0 (success exit) so callers can use it directly in `if` —
+  # `if compute_head_unchanged_for_bead_done ...; then force-FAIL; fi`.
+  run compute_head_unchanged_for_bead_done "abc123" "abc123"
+  [ "$status" -eq 0 ]
+}
+
+@test "compute_head_unchanged_for_bead_done: pre!=post returns 1 (commit landed)" {
+  # The happy path: HEAD moved during the iter, so per-iter signals can be
+  # trusted. Returns 1 so the `if` branch above does not fire.
+  run compute_head_unchanged_for_bead_done "abc123" "def456"
+  [ "$status" -eq 1 ]
+}
+
+@test "compute_head_unchanged_for_bead_done: real temp repo, no commit -> unchanged" {
+  # Drives the helper against the actual `git rev-parse HEAD` shape, not
+  # synthetic strings. Reproduces the failure mode: an iter that emits
+  # BEAD_DONE without committing — pre and post both point at the same SHA.
+  cd "$TMPDIR_TEST"
+  git init -q
+  git -c user.email=t@t.test -c user.name=t commit --allow-empty -m "init" -q
+  pre=$(git rev-parse HEAD)
+  post=$(git rev-parse HEAD)
+  run compute_head_unchanged_for_bead_done "$pre" "$post"
+  [ "$status" -eq 0 ]
+}
+
+@test "compute_head_unchanged_for_bead_done: real temp repo, commit between -> moved" {
+  # Complement to the above: a commit lands between the two reads, so the
+  # helper returns non-zero and ralph.sh proceeds to the real gate run.
+  cd "$TMPDIR_TEST"
+  git init -q
+  git -c user.email=t@t.test -c user.name=t commit --allow-empty -m "init" -q
+  pre=$(git rev-parse HEAD)
+  git -c user.email=t@t.test -c user.name=t commit --allow-empty -m "second" -q
+  post=$(git rev-parse HEAD)
+  run compute_head_unchanged_for_bead_done "$pre" "$post"
+  [ "$status" -eq 1 ]
+}
+
+@test "compute_head_unchanged_for_bead_done: both empty (pre-first-commit repo) -> unchanged" {
+  # Edge case: a repo with no commits has rev-parse HEAD failing; ralph.sh
+  # falls back to "" for both pre and post on a stale iter. Empty == empty
+  # is unchanged → FAIL routing — same direction as a real same-SHA pair.
+  run compute_head_unchanged_for_bead_done "" ""
+  [ "$status" -eq 0 ]
+}
+
+@test "ralph.sh stale-HEAD path forces gate_result=FAIL and writes FAIL to .last-gate-result" {
+  # Integration test: extract ralph.sh's gate-result block (from the
+  # `_RALPH_GATE_RESULT="skipped"` assignment through the closing outer `fi`)
+  # and eval it under variable state that reproduces the stale-HEAD
+  # condition. Must short-circuit run_gate (so a green gate cannot mask the
+  # bug) and must write FAIL to .last-gate-result so the pre-push hook also
+  # rejects the push. Both properties are pinned: a regression that drops
+  # the stale-head branch fails the second assertion; a regression that
+  # lets the gate run anyway fails the first (the stub run_gate returns
+  # PASS, which would clobber FAIL).
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*_RALPH_GATE_RESULT="skipped"$/ { capture=1 }
+    /^[[:space:]]*# --- Confidence routing/ { exit }
+    capture { print }
+  ' "$ralph")
+  [ -n "$block" ]
+
+  # Stub run_gate so a regression that lets the gate run anyway is caught:
+  # if the stale-HEAD branch is dropped, eval falls through to run_gate,
+  # which returns PASS — opposite of the expected FAIL.
+  run_gate() { printf 'PASS\n' > "$2"; return 0; }
+
+  _RALPH_PROJECT_ROOT="$TMPDIR_TEST"
+  _RALPH_GATE_CMD="true"
+  _RALPH_BEAD_DONE=true
+  _RALPH_STALE_HEAD=true
+
+  eval "$block"
+
+  [ "$_RALPH_GATE_RESULT" = "FAIL" ]
+  [ -f "$TMPDIR_TEST/.last-gate-result" ]
+  [ "$(cat "$TMPDIR_TEST/.last-gate-result")" = "FAIL" ]
+}
+
+@test "ralph.sh non-stale BEAD_DONE path runs the gate normally" {
+  # Complement to the above: when _RALPH_STALE_HEAD=false on BEAD_DONE,
+  # the gate runs as before. Pins that the stale-HEAD branch did not
+  # accidentally swallow the normal path — a regression of the form
+  # `if [[ "$_RALPH_STALE_HEAD" != "false" ]]` (typo, polarity flip)
+  # would force every BEAD_DONE to FAIL, not just stale ones.
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*_RALPH_GATE_RESULT="skipped"$/ { capture=1 }
+    /^[[:space:]]*# --- Confidence routing/ { exit }
+    capture { print }
+  ' "$ralph")
+  [ -n "$block" ]
+
+  run_gate() { printf 'PASS\n' > "$2"; return 0; }
+
+  _RALPH_PROJECT_ROOT="$TMPDIR_TEST"
+  _RALPH_GATE_CMD="true"
+  _RALPH_BEAD_DONE=true
+  _RALPH_STALE_HEAD=false
+
+  eval "$block"
+
+  [ "$_RALPH_GATE_RESULT" = "PASS" ]
+  [ "$(cat "$TMPDIR_TEST/.last-gate-result")" = "PASS" ]
+}
+
+@test "ralph.sh confidence.log carries stale_head=true on stale-HEAD iter" {
+  # The audit-trail half of the contract: the confidence.log line must
+  # carry `stale_head=true` so a future grep can find these iters without
+  # cross-correlating against git log timestamps. Extracts the auto-land
+  # branch's log echo and eval's it under stale-HEAD state. The pre-fix
+  # log line had no stale_head field at all; the fix adds it through the
+  # _RALPH_STALE_HEAD_FIELD interpolation. Both branches (HIGH-and-auto-land
+  # and confidence=NONE) carry the field — this test pins the auto-land one;
+  # the next test pins the NONE branch.
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*auto_land=\$_RALPH_AUTO_LAND/ { print; exit }' "$ralph")
+  [ -n "$log_line" ]
+
+  _RALPH_I=1
+  _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_DONE=true
+  _RALPH_CONFIDENCE="LOW"
+  _RALPH_POLICY="all"
+  _RALPH_AUTO_LAND="false"
+  _RALPH_GATE_RESULT="FAIL"
+  _RALPH_STALE_HEAD_FIELD=" stale_head=true"
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+
+  eval "$log_line"
+
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"stale_head=true"* ]] || { echo "Got: $emitted"; return 1; }
+}
+
+@test "ralph.sh confidence.log omits stale_head field on healthy iter" {
+  # Complement: healthy iters do not pollute the log with stale_head=false.
+  # A future audit grepping `stale_head=true` would otherwise still match
+  # negated forms in less-careful greps; keeping the field absent on
+  # healthy iters means the presence of the substring is itself the signal.
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*auto_land=\$_RALPH_AUTO_LAND/ { print; exit }' "$ralph")
+  [ -n "$log_line" ]
+
+  _RALPH_I=1
+  _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_DONE=true
+  _RALPH_CONFIDENCE="HIGH"
+  _RALPH_POLICY="all"
+  _RALPH_AUTO_LAND="true"
+  _RALPH_GATE_RESULT="PASS"
+  _RALPH_STALE_HEAD_FIELD=""
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+
+  eval "$log_line"
+
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" != *"stale_head"* ]] || { echo "Got: $emitted"; return 1; }
+}
+
 # --- confidence.log bead-id source -------------------------------------
 #
 # Regression bead agent-template-65s: ralph.sh's two BEAD_DONE confidence.log

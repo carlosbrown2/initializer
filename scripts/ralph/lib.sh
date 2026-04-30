@@ -175,6 +175,39 @@ should_auto_land() {
   esac
 }
 
+# Detect "BEAD_DONE without a new commit" by comparing the HEAD SHA captured
+# at iter start against the HEAD SHA captured at BEAD_DONE detection.
+#
+# Per-iter measurements (diff_lines / touched_hooks / touched_claude_md in
+# scripts/ralph/ralph.sh) read HEAD without verifying it has moved since
+# iter start. If an iter emits BEAD_DONE without committing, the next
+# measurement reads the *prior* commit's diff and credits that work to the
+# current iter — cross-bead contamination compute_confidence cannot detect
+# on its own. The fix is paired observation: one read at iter start, one
+# at the decision point, refuse to grade if the state didn't move.
+#
+# Args:
+#   pre_sha   — git rev-parse HEAD captured before the agent ran.
+#   post_sha  — git rev-parse HEAD captured at BEAD_DONE detection.
+#
+# Returns:
+#   0  HEAD unchanged (pre == post). Caller should force gate_result=FAIL.
+#   1  HEAD moved (pre != post). Normal BEAD_DONE iter — caller proceeds.
+#
+# Intentionally narrow: it does not know *why* HEAD didn't move (agent
+# forgot to commit, hook rejected the commit, agent stopped mid-iteration),
+# only that it didn't. Routing the signal — forcing FAIL vs. ESCALATE vs.
+# something else — is the caller's job in scripts/ralph/ralph.sh, where
+# the rest of compute_confidence's inputs are in scope.
+compute_head_unchanged_for_bead_done() {
+  local pre_sha="$1"
+  local post_sha="$2"
+  if [[ "$pre_sha" == "$post_sha" ]]; then
+    return 0
+  fi
+  return 1
+}
+
 # Pure retry-state transition. Given the just-failed bead id, the prior
 # last-failed bead id, the current fail count, and max retries, print the
 # new tuple "NEW_COUNT|NEW_LAST|ACTION" to stdout. Action is one of:
