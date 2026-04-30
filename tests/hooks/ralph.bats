@@ -841,23 +841,27 @@ EOF
   # The audit-trail half of the contract: the confidence.log line must
   # carry `stale_head=true` so a future grep can find these iters without
   # cross-correlating against git log timestamps. Extracts the auto-land
-  # branch's log echo and eval's it under stale-HEAD state. The pre-fix
-  # log line had no stale_head field at all; the fix adds it through the
-  # _RALPH_STALE_HEAD_FIELD interpolation. Both branches (HIGH-and-auto-land
-  # and confidence=NONE) carry the field — this test pins the auto-land one;
-  # the next test pins the NONE branch.
+  # branch's _ralph_emit_log call (post-kb6) and eval's it under stale-HEAD
+  # state. The pre-fix log line had no stale_head field at all; the fix
+  # adds it through the _RALPH_STALE_HEAD_FIELD interpolation. Both branches
+  # (HIGH-and-auto-land and confidence=NONE) carry the field — this test
+  # pins the auto-land one; the next test pins the NONE branch.
+  _load_ralph_helpers
   ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
-  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*auto_land=\$_RALPH_AUTO_LAND/ { print; exit }' "$ralph")
+  log_line=$(awk '/^[[:space:]]*_ralph_emit_log .*auto_land=/ { print; exit }' "$ralph")
   [ -n "$log_line" ]
 
   _RALPH_I=1
   _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: do the thing"
   _RALPH_BEAD_DONE=true
   _RALPH_CONFIDENCE="LOW"
   _RALPH_POLICY="all"
   _RALPH_AUTO_LAND="false"
   _RALPH_GATE_RESULT="FAIL"
   _RALPH_STALE_HEAD_FIELD=" stale_head=true"
+  _RALPH_COMPLETED_SUMMARY="(no new commit — stale HEAD)"
   _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
   : > "$_RALPH_CONFIDENCE_LOG"
 
@@ -872,18 +876,22 @@ EOF
   # A future audit grepping `stale_head=true` would otherwise still match
   # negated forms in less-careful greps; keeping the field absent on
   # healthy iters means the presence of the substring is itself the signal.
+  _load_ralph_helpers
   ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
-  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*auto_land=\$_RALPH_AUTO_LAND/ { print; exit }' "$ralph")
+  log_line=$(awk '/^[[:space:]]*_ralph_emit_log .*auto_land=/ { print; exit }' "$ralph")
   [ -n "$log_line" ]
 
   _RALPH_I=1
   _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: do the thing"
   _RALPH_BEAD_DONE=true
   _RALPH_CONFIDENCE="HIGH"
   _RALPH_POLICY="all"
   _RALPH_AUTO_LAND="true"
   _RALPH_GATE_RESULT="PASS"
   _RALPH_STALE_HEAD_FIELD=""
+  _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
   _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
   : > "$_RALPH_CONFIDENCE_LOG"
 
@@ -914,12 +922,12 @@ EOF
 # auto-land branch and the no-confidence/NONE branch).
 
 @test "ralph.sh BEAD_DONE log line uses the picked-up bead id when iter started clean" {
+  _load_ralph_helpers
   ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
 
-  # Extract the BEAD_DONE log line from the auto-land branch. Identified by
-  # its trailing fields (`auto_land=$_RALPH_AUTO_LAND gate_result=...`),
-  # which are unique to this line in ralph.sh.
-  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*auto_land=\$_RALPH_AUTO_LAND/ { print; exit }' "$ralph")
+  # Extract the BEAD_DONE _ralph_emit_log call from the auto-land branch.
+  # Identified by its `auto_land=` middle field, unique to this line.
+  log_line=$(awk '/^[[:space:]]*_ralph_emit_log .*auto_land=/ { print; exit }' "$ralph")
   [ -n "$log_line" ]
 
   # Reproduce the bug condition: no in-progress bead at iter start, fresh
@@ -928,11 +936,15 @@ EOF
   _RALPH_I=1
   _RALPH_ACTIVE_BEAD=""
   _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: do the thing"
   _RALPH_BEAD_DONE=true
   _RALPH_CONFIDENCE="HIGH"
   _RALPH_POLICY="all"
   _RALPH_AUTO_LAND="true"
   _RALPH_GATE_RESULT="PASS"
+  _RALPH_STALE_HEAD_FIELD=""
+  _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
   _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
   : > "$_RALPH_CONFIDENCE_LOG"
 
@@ -944,19 +956,24 @@ EOF
 }
 
 @test "ralph.sh confidence=NONE log line uses the picked-up bead id when iter started clean" {
+  _load_ralph_helpers
   ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
 
-  # Extract the confidence=NONE branch log line (BEAD_DONE seen but no
-  # confidence verdict — e.g., a bead_done=false path that still wants to
-  # log the iter outcome). Identified by `confidence=NONE`.
-  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*confidence=NONE/ { print; exit }' "$ralph")
+  # Extract the confidence=NONE branch _ralph_emit_log call (BEAD_DONE seen
+  # but no confidence verdict — e.g., a bead_done=false path that still wants
+  # to log the iter outcome). Identified by `confidence=NONE`.
+  log_line=$(awk '/^[[:space:]]*_ralph_emit_log .*confidence=NONE/ { print; exit }' "$ralph")
   [ -n "$log_line" ]
 
   _RALPH_I=1
   _RALPH_ACTIVE_BEAD=""
   _RALPH_BEAD_ID="agent-template-xyz"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: do the thing"
   _RALPH_BEAD_DONE=true
   _RALPH_GATE_RESULT="PASS"
+  _RALPH_STALE_HEAD_FIELD=""
+  _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
   _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
   : > "$_RALPH_CONFIDENCE_LOG"
 
@@ -1170,119 +1187,104 @@ EOF
   [[ "$out" != *"Description:"* ]] || { echo "spurious Description line: $out"; return 1; }
 }
 
-# --- ralph.sh confidence.log fields per branch -------------------------
+# --- ralph.sh confidence.log emission ----------------------------------
 #
-# Five log echo points — BLOCKED, REWORK, ESCALATION, BEAD_DONE-with-
-# confidence, BEAD_DONE-without-confidence — each gain bead_type=$type and
-# title="<sanitized>". The two BEAD_DONE branches additionally gain
-# completed="<sanitized>". Tests extract the live source line and eval it
-# so a regression to the old field set surfaces here even if the line's
-# shape moves.
+# Prior to bead agent-template-kb6 the loop carried five separately-
+# interpolated `echo "[ts] iter=N ..." >> log` lines (BLOCKED, REWORK,
+# ESCALATION, BEAD_DONE-with-confidence, BEAD_DONE-without-confidence)
+# each with its own copy of the prefix / suffix and per-branch field set.
+# kb6 collapsed them through `_ralph_emit_log` (ralph.sh):
+#   _ralph_emit_log <status> <bead-id> <middle-fields> [include-completed]
+# The two tests below split that contract: the helper-coverage test pins
+# the helper's own shape and sanitization; the smoke test ensures every
+# call site in ralph.sh still produces a shape carrying bead_type and
+# (for BEAD_DONE) completed, so a regression at either layer surfaces.
 
-@test "ralph.sh BLOCKED log line carries bead_type and sanitized title" {
-  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
-  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*BLOCKED bead=/ { print; exit }' "$ralph")
-  [ -n "$log_line" ]
-
-  _ralph_sanitize_log_field() { printf '%s' "$1"; }
-  _RALPH_I=1
-  _RALPH_ACTIVE_BEAD="agent-template-xyz"
+@test "_ralph_emit_log: builds prefix/suffix shape with optional status, middle, and completed" {
+  _load_ralph_helpers
+  _RALPH_I=7
   _RALPH_BEAD_TYPE="impl"
-  _RALPH_BEAD_TITLE="impl: do the thing"
-  _RALPH_BLOCKED_REASON="missing dep"
-  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
-  : > "$_RALPH_CONFIDENCE_LOG"
-  eval "$log_line"
-  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
-  [[ "$emitted" == *"bead_type=impl"* ]] || { echo "Got: $emitted"; return 1; }
-  [[ "$emitted" == *'title="impl: do the thing"'* ]] || { echo "Got: $emitted"; return 1; }
-}
-
-@test "ralph.sh REWORK log line carries bead_type and sanitized title" {
-  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
-  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*REWORK bead=/ { print; exit }' "$ralph")
-  [ -n "$log_line" ]
-
-  _ralph_sanitize_log_field() { printf '%s' "$1"; }
-  _RALPH_I=1
-  _RALPH_ACTIVE_BEAD="agent-template-xyz"
-  _RALPH_BEAD_TYPE="review"
-  _RALPH_BEAD_TITLE="review: audit foo"
-  _RALPH_REWORK_REASON="prereq incomplete"
-  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
-  : > "$_RALPH_CONFIDENCE_LOG"
-  eval "$log_line"
-  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
-  [[ "$emitted" == *"bead_type=review"* ]] || { echo "Got: $emitted"; return 1; }
-  [[ "$emitted" == *'title="review: audit foo"'* ]] || { echo "Got: $emitted"; return 1; }
-}
-
-@test "ralph.sh ESCALATION log line carries bead_type and sanitized title" {
-  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
-  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*ESCALATION bead=/ { print; exit }' "$ralph")
-  [ -n "$log_line" ]
-
-  _ralph_sanitize_log_field() { printf '%s' "$1"; }
-  _RALPH_I=1
-  _RALPH_FAILED_BEAD="agent-template-xyz"
-  _RALPH_BEAD_TYPE="impl"
-  _RALPH_BEAD_TITLE="impl: do the thing"
-  _RALPH_FAIL_COUNT=3
-  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
-  : > "$_RALPH_CONFIDENCE_LOG"
-  eval "$log_line"
-  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
-  [[ "$emitted" == *"bead_type=impl"* ]] || { echo "Got: $emitted"; return 1; }
-  [[ "$emitted" == *'title="impl: do the thing"'* ]] || { echo "Got: $emitted"; return 1; }
-}
-
-@test "ralph.sh BEAD_DONE auto-land log line carries bead_type, title, and completed" {
-  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
-  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*auto_land=\$_RALPH_AUTO_LAND/ { print; exit }' "$ralph")
-  [ -n "$log_line" ]
-
-  _ralph_sanitize_log_field() { printf '%s' "$1"; }
-  _RALPH_I=1
-  _RALPH_BEAD_ID="agent-template-xyz"
-  _RALPH_BEAD_TYPE="impl"
-  _RALPH_BEAD_TITLE="impl: do the thing"
-  _RALPH_BEAD_DONE=true
-  _RALPH_CONFIDENCE="HIGH"
-  _RALPH_POLICY="all"
-  _RALPH_AUTO_LAND="true"
-  _RALPH_GATE_RESULT="PASS"
-  _RALPH_STALE_HEAD_FIELD=""
+  _RALPH_BEAD_TITLE=$'has\ttab and "quote"'
   _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
   _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+
+  # (a) status word + middle + no completed (BLOCKED/REWORK/ESCALATION shape).
   : > "$_RALPH_CONFIDENCE_LOG"
-  eval "$log_line"
+  _ralph_emit_log "BLOCKED" "agent-template-xyz" "reason=missing dep"
   emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
-  [[ "$emitted" == *"bead_type=impl"* ]] || { echo "Got: $emitted"; return 1; }
-  [[ "$emitted" == *'title="impl: do the thing"'* ]] || { echo "Got: $emitted"; return 1; }
-  [[ "$emitted" == *'completed="feat: [agent-template-xyz] - did the thing"'* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *"iter=7 BLOCKED bead=agent-template-xyz bead_type=impl reason=missing dep"* ]] \
+    || { echo "Got: $emitted"; return 1; }
+  # Title is sanitized (tab → space, " → ').
+  [[ "$emitted" == *"title=\"has tab and 'quote'\""* ]] || { echo "Got: $emitted"; return 1; }
+  # No completed= field when caller omits the flag.
+  [[ "$emitted" != *"completed="* ]] || { echo "spurious completed: $emitted"; return 1; }
+  # archive_schema_check's `grep -oE 'bead=[^ ]+'` still finds the bead id and
+  # is not confused by the adjacent `bead_type=` field.
+  [ "$(echo "$emitted" | grep -oE 'bead=[^ ]+')" = "bead=agent-template-xyz" ]
+
+  # (b) empty status + completed=yes (BEAD_DONE shape) + stale_head substring
+  # carried inside the middle string.
+  : > "$_RALPH_CONFIDENCE_LOG"
+  _ralph_emit_log "" "agent-template-xyz" \
+    "bead_done=true confidence=HIGH gate_result=PASS stale_head=true" "yes"
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"iter=7 bead=agent-template-xyz bead_type=impl bead_done=true confidence=HIGH gate_result=PASS stale_head=true"* ]] \
+    || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *'completed="feat: [agent-template-xyz] - did the thing"'* ]] \
+    || { echo "Got: $emitted"; return 1; }
+  # No double "BLOCKED"/"REWORK"/"ESCALATION" word slipped in for empty status.
+  [[ "$emitted" != *" BLOCKED "* && "$emitted" != *" REWORK "* && "$emitted" != *" ESCALATION "* ]] \
+    || { echo "spurious status word: $emitted"; return 1; }
+
+  # (c) empty bead defaults to "unknown" (covers the {var:-unknown} fallback
+  # the call sites lean on for pre-claim iters).
+  : > "$_RALPH_CONFIDENCE_LOG"
+  _ralph_emit_log "BLOCKED" "" "reason=x"
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"bead=unknown bead_type=impl"* ]] || { echo "Got: $emitted"; return 1; }
 }
 
-@test "ralph.sh BEAD_DONE confidence=NONE log line carries bead_type, title, and completed" {
+@test "ralph.sh _ralph_emit_log call sites: each branch emits bead_type, title, and completed-where-expected" {
+  # Smoke test: extract each of the five _ralph_emit_log call sites from
+  # the live source, eval under hydrated globals, and assert the emitted
+  # log line carries bead_type, the sanitized title, and (for the two
+  # BEAD_DONE branches) completed. A regression that drops a field in any
+  # one branch — or wires the wrong middle-field set — surfaces here.
+  _load_ralph_helpers
   ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
-  log_line=$(awk '/^[[:space:]]*echo "\[\$\(date.*bead_done=\$_RALPH_BEAD_DONE.*confidence=NONE/ { print; exit }' "$ralph")
-  [ -n "$log_line" ]
-
-  _ralph_sanitize_log_field() { printf '%s' "$1"; }
   _RALPH_I=1
-  _RALPH_BEAD_ID="agent-template-xyz"
   _RALPH_BEAD_TYPE="impl"
   _RALPH_BEAD_TITLE="impl: do the thing"
-  _RALPH_BEAD_DONE=true
-  _RALPH_GATE_RESULT="PASS"
-  _RALPH_STALE_HEAD_FIELD=""
-  _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
   _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
-  : > "$_RALPH_CONFIDENCE_LOG"
-  eval "$log_line"
-  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
-  [[ "$emitted" == *"bead_type=impl"* ]] || { echo "Got: $emitted"; return 1; }
-  [[ "$emitted" == *'title="impl: do the thing"'* ]] || { echo "Got: $emitted"; return 1; }
-  [[ "$emitted" == *'completed="feat: [agent-template-xyz] - did the thing"'* ]] || { echo "Got: $emitted"; return 1; }
+
+  # Each entry: <pattern matched against the call site> | <expect-completed>
+  # | <extra hydrated vars (eval'd before the call)>.
+  while IFS='|' read -r pattern expect_completed setup; do
+    [ -z "$pattern" ] && continue
+    call=$(awk -v pat="$pattern" '$0 ~ pat { print; exit }' "$ralph")
+    [ -n "$call" ] || { echo "no call site matched: $pattern"; return 1; }
+    : > "$_RALPH_CONFIDENCE_LOG"
+    eval "$setup"
+    eval "$call"
+    emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+    [[ "$emitted" == *"bead_type=impl"* ]] \
+      || { echo "[$pattern] missing bead_type: $emitted"; return 1; }
+    [[ "$emitted" == *'title="impl: do the thing"'* ]] \
+      || { echo "[$pattern] missing title: $emitted"; return 1; }
+    if [ "$expect_completed" = "yes" ]; then
+      [[ "$emitted" == *'completed="feat: [agent-template-xyz] - did the thing"'* ]] \
+        || { echo "[$pattern] missing completed: $emitted"; return 1; }
+    else
+      [[ "$emitted" != *"completed="* ]] \
+        || { echo "[$pattern] unexpected completed: $emitted"; return 1; }
+    fi
+  done <<'EOF'
+_ralph_emit_log "BLOCKED"|no|_RALPH_ACTIVE_BEAD="agent-template-xyz"; _RALPH_BLOCKED_REASON="missing dep"
+_ralph_emit_log "REWORK"|no|_RALPH_ACTIVE_BEAD="agent-template-xyz"; _RALPH_REWORK_REASON="prereq incomplete"
+_ralph_emit_log "ESCALATION"|no|_RALPH_FAILED_BEAD="agent-template-xyz"; _RALPH_FAIL_COUNT=3
+_ralph_emit_log .*auto_land=|yes|_RALPH_BEAD_ID="agent-template-xyz"; _RALPH_BEAD_DONE=true; _RALPH_CONFIDENCE="HIGH"; _RALPH_POLICY="all"; _RALPH_AUTO_LAND="true"; _RALPH_GATE_RESULT="PASS"; _RALPH_STALE_HEAD_FIELD=""; _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
+_ralph_emit_log .*confidence=NONE|yes|_RALPH_BEAD_ID="agent-template-xyz"; _RALPH_BEAD_DONE=true; _RALPH_GATE_RESULT="PASS"; _RALPH_STALE_HEAD_FIELD=""; _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
+EOF
 }
 
 @test "archive_schema_check still extracts bead id when bead_type field is also present" {

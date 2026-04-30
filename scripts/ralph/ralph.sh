@@ -33,7 +33,7 @@ _ralph_cleanup() {
   unset _RALPH_FAILED_BEAD _RALPH_RETRY_STATE _RALPH_RETRY_REST _RALPH_RETRY_ACTION
   unset _RALPH_GOVERNANCE_JSON
   unset -f _ralph_cleanup _ralph_bead_in_progress _ralph_bead_ready _ralph_bead_title
-  unset -f _ralph_load_bead_meta _ralph_sanitize_log_field
+  unset -f _ralph_load_bead_meta _ralph_sanitize_log_field _ralph_emit_log
   unset -f _ralph_surface_stale_governance
 }
 
@@ -113,6 +113,33 @@ _ralph_sanitize_log_field() {
     s="${s:0:157}..."
   fi
   printf '%s' "$s"
+}
+
+# Emit one confidence.log line. The five exit-routing branches (BLOCKED,
+# REWORK, ESCALATION, BEAD_DONE-with-confidence, BEAD_DONE-without-
+# confidence) all share the same prefix (`[ts] iter=N [STATUS] bead=ID
+# bead_type=T`) and the same suffix (`title="<sanitized>" [completed=...]`)
+# but differ on the middle field set; collapsing here keeps the prefix /
+# suffix shape (and the `_ralph_sanitize_log_field` application) defined
+# once. Backward-compat invariants pinned by tests/hooks/ralph.bats:
+# (a) `bead=<id-or-unknown>` survives `grep -oE 'bead=[^ ]+'` extraction
+# in archive_schema_check; (b) title/completed are sanitized; (c) the
+# stale_head=true substring appears only on stale-HEAD iters.
+_ralph_emit_log() {
+  local status="$1"
+  local bead="${2:-unknown}"
+  local middle="$3"
+  local include_completed="${4:-no}"
+  local line
+  line="[$(date -Iseconds)] iter=$_RALPH_I"
+  [[ -n "$status" ]] && line+=" $status"
+  line+=" bead=$bead bead_type=$_RALPH_BEAD_TYPE"
+  [[ -n "$middle" ]] && line+=" $middle"
+  line+=" title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\""
+  if [[ "$include_completed" == "yes" ]]; then
+    line+=" completed=\"$(_ralph_sanitize_log_field "${_RALPH_COMPLETED_SUMMARY:-}")\""
+  fi
+  echo "$line" >> "$_RALPH_CONFIDENCE_LOG"
 }
 
 # Surface stale (>3d) governance beads above the iter banner so the
@@ -383,7 +410,7 @@ RETRY_EOF
       echo "  Unclaimed $_RALPH_ACTIVE_BEAD and filed blocker bead."
     fi
 
-    echo "[$(date -Iseconds)] iter=$_RALPH_I BLOCKED bead=${_RALPH_ACTIVE_BEAD:-unknown} bead_type=$_RALPH_BEAD_TYPE reason=$_RALPH_BLOCKED_REASON title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\"" >> "$_RALPH_CONFIDENCE_LOG"
+    _ralph_emit_log "BLOCKED" "${_RALPH_ACTIVE_BEAD:-unknown}" "reason=$_RALPH_BLOCKED_REASON"
     _RALPH_FAIL_COUNT=0
     _RALPH_LAST_FAILED_BEAD=""
     rm -f "$_RALPH_RETRY_STATE_FILE"
@@ -405,7 +432,7 @@ RETRY_EOF
       echo "  Unclaimed $_RALPH_ACTIVE_BEAD pending rework."
     fi
 
-    echo "[$(date -Iseconds)] iter=$_RALPH_I REWORK bead=${_RALPH_ACTIVE_BEAD:-unknown} bead_type=$_RALPH_BEAD_TYPE reason=$_RALPH_REWORK_REASON title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\"" >> "$_RALPH_CONFIDENCE_LOG"
+    _ralph_emit_log "REWORK" "${_RALPH_ACTIVE_BEAD:-unknown}" "reason=$_RALPH_REWORK_REASON"
     _RALPH_FAIL_COUNT=0
     _RALPH_LAST_FAILED_BEAD=""
     rm -f "$_RALPH_RETRY_STATE_FILE"
@@ -433,7 +460,7 @@ RETRY_EOF
         _RALPH_BLOCKER_TITLE="BLOCKED: $_RALPH_FAILED_BEAD failed $_RALPH_FAIL_COUNT times — needs manual investigation"
         bd create --title="$_RALPH_BLOCKER_TITLE" --type=bug --priority=1 2>/dev/null || true
 
-        echo "[$(date -Iseconds)] iter=$_RALPH_I ESCALATION bead=$_RALPH_FAILED_BEAD bead_type=$_RALPH_BEAD_TYPE fail_count=$_RALPH_FAIL_COUNT title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\"" >> "$_RALPH_CONFIDENCE_LOG"
+        _ralph_emit_log "ESCALATION" "$_RALPH_FAILED_BEAD" "fail_count=$_RALPH_FAIL_COUNT"
 
         _RALPH_FAIL_COUNT=0
         _RALPH_LAST_FAILED_BEAD=""
@@ -530,7 +557,7 @@ RETRY_EOF
     # _RALPH_BEAD_ID is set at the iter top from either the resumed
     # _RALPH_ACTIVE_BEAD or _ralph_bead_ready, so it always names the bead
     # the agent will work on. Same fix in the confidence=NONE branch below.
-    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_type=$_RALPH_BEAD_TYPE bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT${_RALPH_STALE_HEAD_FIELD} title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\" completed=\"$(_ralph_sanitize_log_field "$_RALPH_COMPLETED_SUMMARY")\"" >> "$_RALPH_CONFIDENCE_LOG"
+    _ralph_emit_log "" "${_RALPH_BEAD_ID:-unknown}" "bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT${_RALPH_STALE_HEAD_FIELD}" "yes"
 
     if [[ "$_RALPH_AUTO_LAND" == "true" ]]; then
       echo "Auto-land: confidence=$_RALPH_CONFIDENCE, policy=$_RALPH_POLICY"
@@ -540,7 +567,7 @@ RETRY_EOF
       read -r
     fi
   else
-    echo "[$(date -Iseconds)] iter=$_RALPH_I bead=${_RALPH_BEAD_ID:-unknown} bead_type=$_RALPH_BEAD_TYPE bead_done=$_RALPH_BEAD_DONE confidence=NONE (no signal detected) gate_result=$_RALPH_GATE_RESULT${_RALPH_STALE_HEAD_FIELD} title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\" completed=\"$(_ralph_sanitize_log_field "$_RALPH_COMPLETED_SUMMARY")\"" >> "$_RALPH_CONFIDENCE_LOG"
+    _ralph_emit_log "" "${_RALPH_BEAD_ID:-unknown}" "bead_done=$_RALPH_BEAD_DONE confidence=NONE (no signal detected) gate_result=$_RALPH_GATE_RESULT${_RALPH_STALE_HEAD_FIELD}" "yes"
   fi
 
   # Footer: bead context + commit subject. Gated on _RALPH_COMPLETED_SUMMARY
