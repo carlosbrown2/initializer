@@ -41,7 +41,7 @@ The initializer walks you through 5 phases. Each phase is an outcome contract �
 - **Built-in quality loop** — Every feature goes through a quartet: implement → review → simplify → learn. Quality is structural, not optional.
 - **Self-improving codebase** — Compound beads feed discovered patterns back into project knowledge, tagged with the model that authored them so they can be retired or re-validated on model upgrade.
 - **Tunable autonomy** — Confidence routing lets you dial human oversight from full (`auto-land: none`) to zero (`auto-land: all`). The agent self-escalates when it's stuck.
-- **Structural enforcement** — Rules are enforced by hooks and gates, not just prompt instructions. If a constraint matters, it has a mechanical backstop. Nine pre-commit hooks ship by default: a fail-closed bead-type gate, scope enforcement, both register integrity checks, review/research write-protection, the review-artifact validator, the CLAUDE.md model-tag validator, the CLAUDE.md size guard, and the commit-message format check.
+- **Structural enforcement** — Rules are enforced by hooks and gates, not just prompt instructions. If a constraint matters, it has a mechanical backstop. Nine pre-commit hooks ship enabled (a tenth — dependency hallucination — ships commented out), plus a commit-msg format hook and a pre-push gate hook. The pre-commit chain runs: a fail-closed bead-type gate, the rubric-edit guard, scope enforcement, both register integrity checks (each layered with `register_symbol_refs_check` for `path::symbol` citations), review/research write-protection, the review-artifact validator, the CLAUDE.md model-tag and pattern-citation validator, and the CLAUDE.md size guard.
 
 ## Quick Start
 
@@ -112,7 +112,7 @@ docs/
   reviews/                  # Review/research artifacts (created/deleted during triads)
 tasks/                      # PRDs live here
 tests/
-  hooks/                    # bats suite covering parsers, gate, and ralph routing
+  hooks/                    # bats suite covering parsers, gate, ralph routing, and harness-surface invariants (per-file/per-function line budgets, gate-clause count, confidence-axis arity, pause-rate ceiling)
   regression/               # Regression tests from bugs found during the project
 ```
 
@@ -139,18 +139,21 @@ These appear after the first ralph iteration and are **not** shipped with the te
 | Hook | What it enforces |
 |---|---|
 | Bead type fail-closed gate | When a bead is in progress, `.current-bead-type` must exist and hold a valid value (`impl`/`review`/`pare`/`compound`/`research`). Closes the "skip the marker → no enforcement" bypass for the hooks below. Also fail-closed on `bd` extraction errors: if `bd list --status=in_progress --json` fails or returns non-parseable JSON, the commit is BLOCKED rather than silently treated as "no bead in progress". |
+| Rubric-edit guard | Phase 1 completion check. Once any bead is in progress, `docs/skills/review-rubric.md` must no longer match the shipped starter (no starter disclaimer, no starter H1 header verbatim, at least one project-specific clause). Goes silent once the rubric has been refined. |
 | Scope enforcement | `impl`/`pare`/`compound` beads must declare `.current-bead-scope`; commits outside the scope are rejected (infrastructure paths exempted; compound beads also get `CLAUDE.md`, `docs/skills/`, and `tests/regression/`). |
-| Failure-mode register integrity | Every row in `docs/failure-modes.md` is single-line, its last cell holds an acceptable Status (`covered`/`proven-impossible`/`out-of-scope`), and every referenced check file exists. |
-| Decision register integrity | `docs/decision-register.md` has all baseline rows; every row is single-line with ≥5 columns and a last-cell Status of `bounded`/`ritual-bounded`/`agent-discretion`/`escalation-only`; every referenced bounding-mechanism file exists. |
+| Failure-mode register integrity | Every row in `docs/failure-modes.md` is single-line, its last cell holds an acceptable Status (`covered`/`proven-impossible`/`out-of-scope`), and every referenced check file exists. Layered with `register_symbol_refs_check`: every `<path>::<symbol>` token in a Check cell must resolve to a `def`/`async def`/`class`/module-level binding actually defined in that file (catches a pare-down that renames or deletes the cited symbol while leaving the file in place). |
+| Decision register integrity | `docs/decision-register.md` has all baseline rows; every row is single-line with ≥5 columns and a last-cell Status of `bounded`/`ritual-bounded`/`agent-discretion`/`escalation-only`; every referenced bounding-mechanism file exists. Same `register_symbol_refs_check` layer applies to `<path>::<symbol>` tokens in Bounding-mechanism / Enforcement cells. |
 | Review/research write-protection | When `.current-bead-type` is `review` or `research`, only `docs/reviews/` may change. |
 | Review-artifact validator | Files in `docs/reviews/` (during a `review` bead) cite `docs/skills/review-rubric.md` and contain at least one `P[123].clause-name` severity marker, and every cited clause is defined in the rubric. Quote-safe iteration (filenames with spaces are handled). |
-| CLAUDE.md model-tag validator | Every `### ` entry under `## Discovered Patterns` carries an anchored `model:` tag. |
+| CLAUDE.md model-tag + pattern-citation validator | Every `### ` entry under `## Discovered Patterns` carries an anchored `model:` tag **and** at least one binding-artifact citation (a `<path>::<symbol>` token, a `tests/...` path reference, or a mention of `docs/failure-modes.md` / `docs/decision-register.md`). Closes the "patterns can grow as prose alone" loophole that the 200-line CLAUDE.md cap (a count bound, not a content bound) cannot. |
 | CLAUDE.md size guard | Rejects commits pushing `CLAUDE.md` over 200 lines. |
-| Commit-message format | Enforces `feat\|fix\|refactor\|review\|compound\|research\|docs\|chore\|test: ...` prefix, and when the message begins with `[`, enforces the full `[bead-id] - <title>` shape. |
 
 A tenth hook, **dependency hallucination check**, ships commented out — uncomment after installing `dep-hallucinator` (or your preferred equivalent).
 
-A **pre-push** hook is also installed; it re-runs the verification gate declared under `## Verification Gate` in `CLAUDE.md`. The gate includes `shellcheck -x`, a `bd` version floor check, and the full bats suite. Divergence between the agent's self-reported gate result and the real observed result is called out explicitly in the block message.
+Two more hooks ship as separate git-hook files:
+
+- **commit-msg format** — enforces `feat|fix|refactor|review|compound|research|docs|chore|test: ...` prefix, and when the message begins with `[`, enforces the full `[bead-id] - <title>` shape (regex sourced from `BEAD_ID_REGEX`).
+- **pre-push** — re-runs the verification gate declared under `## Verification Gate` in `CLAUDE.md`. The gate includes `shellcheck -x`, a `bd` version floor check, and the full bats suite. The pre-push hook also reads `.last-gate-result` (written by `ralph.sh` after its own bead-exit gate run) and explicitly calls out divergence between the iteration-time and push-time gate runs in the block message.
 
 ### Why not the `pre-commit` framework?
 

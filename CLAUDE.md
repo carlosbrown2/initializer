@@ -7,9 +7,9 @@ This is the **initializer template** itself. The project under development is th
 - `project-kickoff-prompt.md` — the phase-by-phase outcome contract for any project bootstrapped from this template.
 - `scripts/ralph/ralph.sh` — the long-running agent loop. Picks a ready bead, runs the agent, re-runs the verification gate in bash on BEAD_DONE, derives confidence from observed signals (gate result, diff size, touched hooks/CLAUDE.md, retry count), auto-lands if policy allows.
 - `scripts/ralph/prompt.md` — the per-iteration system prompt the loop feeds the agent.
-- `scripts/hooks/install.sh` — installs the pre-commit chain (bead-type gate, scope enforcement, register integrity, review artifact validator, model-tag validator, CLAUDE.md size guard, commit-message format).
+- `scripts/hooks/install.sh` — installs the pre-commit chain (bead-type gate, rubric-edit guard, scope enforcement, register integrity + symbol-refs, review artifact validator, model-tag + pattern-citation validator, CLAUDE.md size guard) plus the commit-msg format hook and pre-push gate hook.
 - `docs/failure-modes.md` and `docs/decision-register.md` — the two registers that every register-integrity hook parses.
-- `docs/skills/` — domain skill files; `review-rubric.md` ships as a starter that each project refines in Phase 1.
+- `docs/skills/` — domain skill files. `review-rubric.md` ships as a starter that each project refines in Phase 1; `harness-constraints.md` documents the inherited harness invariants (the five patterns the template's own development surfaced).
 
 ## Code Standards
 
@@ -53,24 +53,15 @@ The template itself ships `auto-land: high` as the safer default for every proje
 
 auto-land: all
 
+## Harness Surface Bounds
+
+The harness (`scripts/ralph/`, `scripts/hooks/`, `tests/hooks/`) is capped along four dimensions. A change that violates any earns explicit justification in the bead's notes, and the dimension being violated is the lens that focuses the justification.
+
+1. **Pause-rate ceiling.** Aggregate `auto_land=false` rate across `scripts/ralph/confidence.log` stays at or below baseline. New `compute_confidence` downgrade sources or pause surfaces ship paired with a retirement or threshold-raise elsewhere — the rate is the bind, not any single axis. Bound by `tests/hooks/pause_rate_budget.bats`.
+2. **Gate-clause count is fixed.** New harness checks land as functions in `scripts/hooks/parsers.sh`, wire into `scripts/hooks/install.sh`, and ride the existing `bats tests/hooks/` gate clause — gate-string length unchanged. A new top-level gate clause earns a separate justification naming the contract the existing clauses cannot absorb. Bound by `tests/hooks/gate_clause_count.bats`.
+3. **Confidence-axis budget: one in, one out.** `compute_confidence` accepts a fixed number of axes. Adding one without retiring one bloats the function and dilutes per-axis signal-to-noise. A future maintainer should hold every axis in working memory and know what real-risk class it catches. Bound by `tests/hooks/compute_confidence_arity.bats`.
+4. **Per-file and per-function line caps.** Harness shell files have line caps; no single function exceeds the cap that lets a maintainer hold it in memory. Cap-fail at commit triggers a `harness-pare:` bead whose DoD lists each function in the over-budget file, names its binding test or contract, classifies ritual vs. load-bearing, and pares ritual until under budget. Bound by `tests/hooks/budgets.bats`.
+
 ## Discovered Patterns
 
-### Bind checks to the property, not a proxy for it
-model: claude-opus-4-7
-Every `bounded` row in `docs/decision-register.md` is a candidate for "the bound is on a proxy, not the actual property." Shape regex (`P[123]\.[a-z-]+`) is a proxy for clause membership; single-phrase grep (`"This file is a starter rubric"`) is a proxy for project-specificity; literal `|| true` match is a proxy for the "soft-fail escape" bug class. Each holds for the obvious case and breaks under a slightly different attack on the same class. Tightening means binding the check to the actual property: membership in a canonical set extracted from the single source of truth (rubric `**P[123].name**` markers), a multi-clause test that includes both absence-of-starter and presence-of-project-specific-content, a regex covering every syntactic variant of the bug class. Apply when auditing any `bounded` row or weak-test P2 finding.
-
-### One implementation, one library: hook sources what the tests import
-model: claude-opus-4-7
-When a pre-commit hook and a test suite both need the same parser / validator logic, put it in a sourceable library (`scripts/hooks/parsers.sh`) and have the generated hook and the bats suite both `source` it. The generated hook fails closed if the library is missing, so "forgot to re-run install.sh after editing parsers.sh" is a hard error instead of a silent drift. Pair with smoke tests that run each parser against the real committed registers — a legitimate register edit that no longer parses is caught before pre-commit. Applies to any new check: if production needs it and tests need it, source it from one place. Bind: `tests/hooks/parsers.bats` and the heredoc in `scripts/hooks/install.sh` both `source scripts/hooks/parsers.sh`.
-
-### Promote a ritual-bounded row to bounded in a single commit
-model: claude-opus-4-7
-When an audit bead lands the mechanism a row was pending, update three things together: (1) the Enforcement cell names the file that does the enforcement (the register integrity hook validates that any path-shaped token exists on disk); (2) Status flips to `bounded`; (3) the matching bullet is removed from the "Pending promotions" section below the table. Missing any of the three leaves the register internally inconsistent. Same principle for broadening an existing `covered` failure-mode row: update the failure-mode description and the Check cell in the same commit so the register cannot claim a tighter bound than the check delivers. Bind: `docs/decision-register.md` and `docs/failure-modes.md` are the registers this pattern operates on.
-
-### Gate-clause ordering: dependency-first, most-specific cause first
-model: claude-opus-4-7
-A single clause's exit code should report the most specific cause possible. Order the verification gate so parse-checks for sourced libraries precede the test runner that sources them (`bash -n scripts/hooks/parsers.sh` before `bats tests/hooks/`) — a syntax error in the library then surfaces as a readable `bash -n` failure, not as an opaque bats source error. Every new clause earns two mechanical checks: one that the clause does its job (corrupting its target causes non-zero exit) and one that the clause cannot be silently dropped later (a structural-presence assertion or a corruption test whose passing requires the clause). Forbiddances for bug classes (`|| true`, `.md` paths in a `bash -n` chain) live adjacent to the gate in the same prose block so a future editor sees them in peripheral vision.
-
-### Snapshot volatile state once per iteration
-model: claude-opus-4-7
-If the same piece of external state is read twice in an iteration and one read happens after an agent has mutated it, the second read will silently see the wrong value and any log line downstream of that read is a proxy, not the property. In `ralph.sh`, the active bead id was captured once at iteration top and again after the agent ran; the agent had called `bd close` in between, so every successful iteration logged `bead=unknown`. Fix: one snapshot per iteration, reuse the variable. Applies to any loop that queries the same external tool around an agent invocation. Bind: `tests/hooks/ralph.bats` covers the BEAD_DONE confidence.log echo lines under the bug condition; `docs/failure-modes.md` row "scripts/ralph/ralph.sh BEAD_DONE confidence.log bead= field" pins the underlying bug class.
+Project-specific patterns the agent surfaces during work land here under `### <title>` entries with `model:` tags and a binding artifact citation (path::symbol, `tests/...` reference, or a register row). Inherited template constraints are documented in `docs/skills/harness-constraints.md` and are not duplicated here.
