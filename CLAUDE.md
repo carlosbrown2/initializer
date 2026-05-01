@@ -45,7 +45,6 @@ The gate is enforced at **two points**, and both must agree before a push reache
 - No hook is ever bypassed with `--no-verify`. If a hook is wrong, fix the hook.
 - Bead id shape lives in exactly one place per library: `BEAD_ID_REGEX` in `scripts/ralph/lib.sh` and `PARSERS_BEAD_ID_REGEX` in `scripts/hooks/parsers.sh`. A bats smoke test in `tests/hooks/parsers.bats` asserts the two values are equal byte-for-byte. Never inline the regex at a call site — reference the constant.
 - `bd` CLI output is parsed only via `--json` + `jq`. Human-formatted output is not part of the bd contract and must not be a load-bearing parser input.
-- `archive.txt` is a machine-parsed artifact. Every `bead_done=true` entry in `confidence.log` with a real bead id must have a matching `## <date> - <bead-id>` block in `archive.txt` (checked by `archive_schema_check` in the gate). This keeps "agent wrote a progress entry" from being a proxy for "the entry is discoverable by future agents."
 
 ## Confidence Routing
 

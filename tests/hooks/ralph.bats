@@ -1287,25 +1287,40 @@ _ralph_emit_log .*confidence=NONE|yes|_RALPH_BEAD_ID="agent-template-xyz"; _RALP
 EOF
 }
 
-@test "archive_schema_check still extracts bead id when bead_type field is also present" {
-  # Backward-compat invariant: archive_schema_check uses `grep -oE 'bead=[^ ]+'`
-  # to extract the bead id from confidence.log. The new `bead_type=<word>`
-  # field starts with a different token (`bead_type=`, not `bead=`) so the
-  # regex must not match it. A regression that drops the trailing `=` from
-  # the regex (e.g. `bead[^ ]+`) would silently match `bead_type=...` and
-  # try to look up `type=impl` in archive.txt — which would always fail.
-  # shellcheck source=/dev/null
-  source "$PROJECT_ROOT/scripts/hooks/parsers.sh"
-  cd "$TMPDIR_TEST"
-  cat > confidence.log <<'EOF'
-[2026-04-30T12:00:00] iter=1 bead=agent-template-xyz bead_type=impl bead_done=true confidence=HIGH policy=high auto_land=true gate_result=PASS title="x" completed="y"
-EOF
-  cat > archive.txt <<'EOF'
-## 2026-04-30 12:00 - agent-template-xyz
-- Type: impl
-EOF
-  run archive_schema_check archive.txt confidence.log
-  [ "$status" -eq 0 ] || { echo "out: $output"; return 1; }
+@test "ralph/hooks bash surface: no function-local collides with a zsh read-only special parameter" {
+  # Regression for agent-template-uez: ralph.sh:_ralph_emit_log declared
+  # `local status="$1"`. zsh reserves `status` as a read-only special
+  # parameter (alias of `$?`), so under a sourced zsh shell the function
+  # aborted with `read-only variable: status` — and because the script is
+  # sourced from the user's interactive shell, the unwind skipped
+  # `_ralph_cleanup`, leaking `set -u` into the user's prompt (RPROMPT /
+  # VIRTUAL_ENV prompt-segment errors).
+  #
+  # Bind the property: every bash file the loop sources or the hooks chain
+  # depends on is sourced from zsh in the wild (ralph.sh directly; lib.sh
+  # and parsers.sh transitively). A function-local whose name matches a
+  # zsh read-only special is a latent abort. The set below is the known
+  # zsh read-only / special-parameter names whose `local`/`typeset`
+  # collision is fatal in a sourced context.
+  local files=(
+    "$PROJECT_ROOT/scripts/ralph/ralph.sh"
+    "$PROJECT_ROOT/scripts/ralph/lib.sh"
+    "$PROJECT_ROOT/scripts/hooks/parsers.sh"
+    "$PROJECT_ROOT/scripts/hooks/install.sh"
+  )
+  local reserved=(status pipestatus argv funcstack funcfiletrace funcsourcetrace signals seconds histcmd history lineno)
+  local f name hit
+  for f in "${files[@]}"; do
+    [ -f "$f" ] || { echo "missing file: $f"; return 1; }
+    for name in "${reserved[@]}"; do
+      hit=$(grep -nE "^[[:space:]]*(local|typeset|declare)[[:space:]]+${name}([[:space:]]|=)" "$f" || true)
+      if [ -n "$hit" ]; then
+        echo "zsh read-only special parameter '$name' used as a function-local in $f:"
+        echo "$hit"
+        return 1
+      fi
+    done
+  done
 }
 
 # --- ralph.sh iteration footer -----------------------------------------

@@ -126,13 +126,20 @@ _ralph_sanitize_log_field() {
 # in archive_schema_check; (b) title/completed are sanitized; (c) the
 # stale_head=true substring appears only on stale-HEAD iters.
 _ralph_emit_log() {
-  local status="$1"
+  # `emit_status`, not `status`: zsh reserves `status` as a read-only special
+  # parameter (alias of `$?`), so `local status=...` aborts under a sourced
+  # zsh shell with `read-only variable: status`. The script is sourced from
+  # the user's interactive shell, so any function-local that collides with a
+  # zsh special name unwinds the loop before `_ralph_cleanup` can restore
+  # `set +u` — the symptom is the user's prompt then erroring on every
+  # unset prompt-segment variable (RPROMPT / VIRTUAL_ENV / etc.).
+  local emit_status="$1"
   local bead="${2:-unknown}"
   local middle="$3"
   local include_completed="${4:-no}"
   local line
   line="[$(date -Iseconds)] iter=$_RALPH_I"
-  [[ -n "$status" ]] && line+=" $status"
+  [[ -n "$emit_status" ]] && line+=" $emit_status"
   line+=" bead=$bead bead_type=$_RALPH_BEAD_TYPE"
   [[ -n "$middle" ]] && line+=" $middle"
   line+=" title=\"$(_ralph_sanitize_log_field "$_RALPH_BEAD_TITLE")\""
