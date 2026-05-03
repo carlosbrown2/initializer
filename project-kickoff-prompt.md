@@ -58,16 +58,16 @@ Each row must be a single line — multi-line visual continuations are not parse
 |---------------------------|---------------------------|-----------------------------------------------------------------------------------|-----------------------------------------------------------------------------------|------------------|
 | Solution selection        | impl bead execution       | every acceptance criterion bound to a mechanical check                            | failure-mode register hook                                                        | bounded          |
 | Acceptance interpretation | every "is it done" call   | every PRD criterion expressible as test/type/proof                                | PRD review at Phase 1; re-validate on PRD edit                                    | ritual-bounded   |
-| Review verdict            | review beads              | severity rubric in docs/skills/review-rubric.md; each finding cites a clause      | review artifact validator hook                                                    | bounded          |
+| Review verdict            | review beads              | severity rubric in docs/skills/review-rubric.md; review-bead contract mandates each finding cite a clause | review-bead contract in scripts/ralph/prompt.md; human read of docs/reviews/<bead-id>.md | ritual-bounded   |
 | Pattern extraction        | compound beads            | every promoted pattern carries a `model:` tag and a retire-on-upgrade rule        | CLAUDE.md model-tag validator hook                                                | bounded          |
 | Decomposition             | Phase 2                   | bead schema: scope, deps, criteria, size, register DoD                            | beads CLI + human dep-graph review at Phase 2                                     | ritual-bounded   |
 | Tool / search choice      | execution                 | unconstrained — model picks                                                       | none (rationale: search strategy is exactly where we want model freedom)          | agent-discretion |
 | Model upgrade drift       | model swap                | every promoted pattern tagged with source model; retire unless re-validated       | upgrade ritual: re-run both registers under the new model before resuming         | ritual-bounded   |
 | Scope creep               | every commit              | `.current-bead-scope` declares allowed paths; infrastructure paths always allowed | scope enforcement hook                                                            | bounded          |
-| Artifact format           | review / research beads   | review artifacts cite the rubric and contain a severity clause                    | review artifact validator hook                                                    | bounded          |
+| Artifact format           | review / research beads   | review artifacts cite the rubric and contain a severity clause                    | review-bead contract in scripts/ralph/prompt.md; human read of docs/reviews/<bead-id>.md | ritual-bounded   |
 | Sampling variance         | every model invocation    | `--print` mode, single-shot, fresh context per bead                               | ralph.sh invocation; one-bead-per-iteration                                       | bounded          |
-| Confidence                | exit signal               | `<confidence>` tag with HIGH/MEDIUM/LOW                                           | ralph.sh parse_confidence + auto-land routing                                     | bounded          |
-| Verification truth        | every "done" claim        | one command from `CLAUDE.md`, not agent judgment                                  | `<gate-result>` tag presence enforced by ralph.sh; tag truth is agent self-report | ritual-bounded   |
+| Confidence                | post-agent routing on BEAD_DONE | bash-derived from gate result — PASS → HIGH, anything else → LOW            | scripts/ralph/lib.sh compute_confidence + should_auto_land routing against `auto-land:` policy in CLAUDE.md | bounded          |
+| Verification truth        | every "done" claim        | one command from `CLAUDE.md`, not agent judgment                                  | scripts/ralph/lib.sh run_gate writes .last-gate-result on BEAD_DONE; pre-push hook re-runs the gate as defense in depth | bounded          |
 | Architectural choice      | new subsystem design      | escalate to human; agent does not decide alone                                    | `<promise>BLOCKED</promise>` with reason                                          | escalation-only  |
 ```
 
@@ -143,13 +143,13 @@ Done when every bead is closed and **all** of the following hold for every commi
 - The failure-mode register has been updated for any module the bead touched, with at least one new row per new failure mode introduced.
 - The decision register has been updated if a new decision point emerged.
 - The commit's diff is within the bead's declared scope (enforced by the scope hook).
-- A confidence signal was emitted.
+- `ralph.sh` derived a confidence verdict from the gate result and routed the bead accordingly.
 
 The Ralph loop's hard rule still holds: **one bead per fresh agent session, then stop**. This is itself a decision-register entry: it bounds "context drift" by structurally preventing it. Memory persists through git — the registers, `CLAUDE.md`, `docs/skills/` — not through conversation history. (`scripts/ralph/archive.txt` is a per-run log, not persisted memory: it is gitignored.)
 
-Beyond that hard rule, the per-iteration prompt should describe outcomes, not steps. The agent decides how to orient, how to search, how to validate. It must produce: a closed bead, a green gate, updated registers, and a confidence signal.
+Beyond that hard rule, the per-iteration prompt should describe outcomes, not steps. The agent decides how to orient, how to search, how to validate. It must produce: a closed bead, a green gate, and updated registers. `ralph.sh` derives the confidence verdict from the gate result on its own.
 
-**Confidence routing**: three tiers — `HIGH`, `MEDIUM`, `LOW`. `CLAUDE.md` declares the auto-land policy under `## Confidence Routing`: `auto-land: all` (auto-land any tier, default), `auto-land: high` (auto-land HIGH only), or `auto-land: none` (every bead requires human approval).
+**Confidence routing**: two tiers — `HIGH`, `LOW`. `compute_confidence` (`scripts/ralph/lib.sh`) maps gate=PASS → HIGH and anything else → LOW. `CLAUDE.md` declares the auto-land policy under `## Confidence Routing`: `auto-land: all` (auto-land any tier), `auto-land: high` (auto-land HIGH only, default), or `auto-land: none` (every bead requires human approval).
 
 **Retry rule**: if the verification gate fails twice on the same bead with the same error class, the third attempt must use a fundamentally different strategy or escalate via `BLOCKED`. Encoded in `ralph.sh`, not in prose.
 
@@ -198,7 +198,7 @@ An eighth hook, **dependency hallucination check** (`dep-hallucinator` or equiva
 ```
 mypy --strict src/ tests/ && pytest && hypothesis --profile=ci && python -m proofs && dep-hallucinator check && ruff check
 ```
-The gate is enforced at **two points**: (1) the agent runs it during a bead and reports via `<gate-result>PASS|FAIL</gate-result>`, which `ralph.sh` parses and persists to `.last-gate-result`; (2) the pre-push hook installed by `scripts/hooks/install.sh` extracts the gate from `CLAUDE.md`, re-runs it on `git push`, and blocks the push if the real exit code diverges from the self-report. Do not bury slow checks in "I'll run them later."
+The gate is enforced at **two points**: (1) `ralph.sh` runs the gate itself on BEAD_DONE via `scripts/ralph/lib.sh` `run_gate` (sourcing the command from `CLAUDE.md` through `scripts/hooks/parsers.sh` `gate_command_extract`) and writes the real exit code to `.last-gate-result` — the agent emits no gate tag, since a self-reported tag would be a prediction of the gate, not a measurement of it; (2) the pre-push hook installed by `scripts/hooks/install.sh` re-runs the same gate command on `git push` as defense in depth and blocks if the real exit code is non-zero. Do not bury slow checks in "I'll run them later."
 
 ---
 
@@ -211,6 +211,6 @@ The gate is enforced at **two points**: (1) the agent runs it during a bead and 
 - **Constrain, don't dictate.** Your job is to bound the agent's choice space, not to script its decisions. If you find yourself writing prose like "first do X, then do Y," look for a hook or schema that would make the prose unnecessary.
 - **Methodology is yours to choose.** If you find a stronger technique than what's in `docs/skills/backpressure-catalog.md`, use it and update the catalog. Do not feel constrained by what previous projects used.
 - **When a rule starts mattering, encode it.** If you find yourself reminding the agent of a rule in prose, that rule should become a hook, a test, a schema, or a type. Promote, don't repeat.
-- **Confidence is reported, not negotiated.** Emit `<confidence level="HIGH|MEDIUM|LOW">reason</confidence>` after each bead. Routing happens in `ralph.sh`.
+- **Confidence is bash-derived, not self-reported.** `compute_confidence` (`scripts/ralph/lib.sh`) maps the bash-observed gate result to HIGH or LOW; the agent emits no confidence tag. Routing happens in `ralph.sh`.
 - **Tag patterns with the model that wrote them.** Every entry under `CLAUDE.md ## Discovered Patterns` carries a `model:` tag. On model upgrade, every tagged pattern is re-validated or retired. This bounds "model upgrade drift" in the decision register.
 - **Structural over verbal at every layer.** This document is the smallest possible set of contracts. Anything you'd want to add to it should probably be a hook instead.
