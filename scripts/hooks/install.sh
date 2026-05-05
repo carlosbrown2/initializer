@@ -197,6 +197,26 @@ is_infra_path() {
   return 1
 }
 
+is_read_only_bead_allowed_path() {
+  local file="$1"
+  local infra
+
+  if [ -n "$IN_PROGRESS_BEAD" ] && [ "$file" = "docs/reviews/${IN_PROGRESS_BEAD}.md" ]; then
+    return 0
+  fi
+
+  for infra in "${INFRA_PATHS[@]}"; do
+    # Review/research beads may write their own review artifact, but not
+    # arbitrary docs/reviews/ files belonging to other beads.
+    [ "$infra" = "docs/reviews/" ] && continue
+    case "$file" in
+      "$infra"|"$infra"*) return 0 ;;
+    esac
+  done
+
+  return 1
+}
+
 case "$BEAD_TYPE" in
   impl|pare|compound)
     if [ ! -f "$SCOPE_FILE" ]; then
@@ -209,6 +229,38 @@ case "$BEAD_TYPE" in
       echo ""
       echo "  Always-allowed infrastructure paths (no need to list):"
       for p in "${INFRA_PATHS[@]}"; do echo "    $p"; done
+      exit 1
+    fi
+    ;;
+esac
+
+case "$BEAD_TYPE" in
+  review|research)
+    read_only_blocked=""
+    while IFS= read -r file; do
+      [ -z "$file" ] && continue
+
+      if ! is_read_only_bead_allowed_path "$file"; then
+        read_only_blocked="${read_only_blocked}
+    ${file}"
+      fi
+    done <<< "$(git diff --cached --name-only)"
+
+    if [ -n "$read_only_blocked" ]; then
+      echo "BLOCKED: $BEAD_TYPE beads are read-only except for their artifact and infrastructure paths."
+      printf '%s\n' "$read_only_blocked"
+      echo ""
+      echo "  Allowed artifact:"
+      echo "    docs/reviews/${IN_PROGRESS_BEAD}.md"
+      echo ""
+      echo "  Always-allowed infrastructure paths:"
+      for p in "${INFRA_PATHS[@]}"; do
+        [ "$p" = "docs/reviews/" ] && continue
+        echo "    $p"
+      done
+      echo ""
+      echo "  How to fix: move source changes to an implementation bead, or stage only"
+      echo "  the review/research artifact and normal bead infrastructure updates."
       exit 1
     fi
     ;;
