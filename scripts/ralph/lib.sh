@@ -16,6 +16,19 @@
 # which is exactly the bug class the decision register names.
 BEAD_ID_REGEX='[a-z][-a-z0-9]*-[a-z0-9]{2,}'
 
+# Extract the iteration exit signal from agent output.
+#
+# The loop used to route by grepping the entire transcript independently
+# for each promise tag, with COMPLETE checked first. That made any stray
+# mention of `<promise>COMPLETE</promise>` in an otherwise successful
+# BEAD_DONE transcript terminate the whole Ralph loop after one bead. Bind
+# routing to the first standalone promise line instead: the prompt contract
+# requires the agent to emit exactly one exit signal, and explanatory prose
+# that happens to quote another signal should not outrank the actual signal.
+extract_promise_signal() {
+  sed -nE 's/^[[:space:]]*<promise>(BEAD_DONE|BLOCKED|REWORK_REQUIRED|COMPLETE)<\/promise>[[:space:]]*$/\1/p' | head -1
+}
+
 # Execute the verification gate command and record the real exit code.
 #
 # Replaces the prior design where the agent ran the gate and self-reported

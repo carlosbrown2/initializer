@@ -22,6 +22,7 @@ _ralph_cleanup() {
   unset _RALPH_FAIL_COUNT _RALPH_LAST_FAILED_BEAD _RALPH_MAX_RETRIES
   unset _RALPH_I _RALPH_CURRENT_BEAD _RALPH_ACTIVE_BEAD
   unset _RALPH_BEAD_ID _RALPH_BEAD_TITLE _RALPH_OUTPUT
+  unset _RALPH_PROMISE_SIGNAL
   unset _RALPH_BEAD_TYPE _RALPH_BEAD_DESCRIPTION _RALPH_COMPLETED_SUMMARY
   unset _RALPH_BEAD_DONE _RALPH_BLOCKED_REASON _RALPH_REWORK_REASON
   unset _RALPH_PREREQ_BEAD _RALPH_BLOCKER_TITLE
@@ -321,8 +322,10 @@ RETRY_EOF
     _RALPH_OUTPUT=$(claude --dangerously-skip-permissions --print < "$_RALPH_PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
   fi
 
+  _RALPH_PROMISE_SIGNAL=$(extract_promise_signal <<<"$_RALPH_OUTPUT")
+
   # Check for completion signal (all work done)
-  if echo "$_RALPH_OUTPUT" | grep -q "<promise>COMPLETE</promise>"; then
+  if [[ "$_RALPH_PROMISE_SIGNAL" == "COMPLETE" ]]; then
     finish 0 "Ralph completed all tasks at iteration $_RALPH_I of $_RALPH_MAX_ITERATIONS."
     break
   fi
@@ -336,7 +339,7 @@ RETRY_EOF
   # --- Exit signal routing ---
   _RALPH_BEAD_DONE=false
 
-  if echo "$_RALPH_OUTPUT" | grep -q "<promise>BEAD_DONE</promise>"; then
+  if [[ "$_RALPH_PROMISE_SIGNAL" == "BEAD_DONE" ]]; then
     _RALPH_BEAD_DONE=true
     _RALPH_FAIL_COUNT=0
     _RALPH_LAST_FAILED_BEAD=""
@@ -345,7 +348,7 @@ RETRY_EOF
     _RALPH_COMPLETED_SUMMARY=$(git -C "$_RALPH_PROJECT_ROOT" log -1 --pretty=%s 2>/dev/null || echo "")
     echo "Bead completed successfully at iteration $_RALPH_I."
 
-  elif echo "$_RALPH_OUTPUT" | grep -q "<promise>BLOCKED</promise>"; then
+  elif [[ "$_RALPH_PROMISE_SIGNAL" == "BLOCKED" ]]; then
     _RALPH_BLOCKED_REASON=$(echo "$_RALPH_OUTPUT" | sed -n 's/.*<blocked-reason>\(.*\)<\/blocked-reason>.*/\1/p' | head -1)
     _RALPH_BLOCKED_REASON="${_RALPH_BLOCKED_REASON:-No reason provided}"
 
@@ -363,7 +366,7 @@ RETRY_EOF
     _RALPH_LAST_FAILED_BEAD=""
     rm -f "$_RALPH_RETRY_STATE_FILE"
 
-  elif echo "$_RALPH_OUTPUT" | grep -q "<promise>REWORK_REQUIRED</promise>"; then
+  elif [[ "$_RALPH_PROMISE_SIGNAL" == "REWORK_REQUIRED" ]]; then
     _RALPH_REWORK_REASON=$(echo "$_RALPH_OUTPUT" | sed -n 's/.*<rework-reason>\(.*\)<\/rework-reason>.*/\1/p' | head -1)
     _RALPH_REWORK_REASON="${_RALPH_REWORK_REASON:-No reason provided}"
 

@@ -47,6 +47,32 @@ teardown() {
   grep -qF 'codex --ask-for-approval never --sandbox workspace-write --cd "$_RALPH_PROJECT_ROOT" exec - < "$_RALPH_PROMPT_FILE"' "$ralph"
 }
 
+# --- extract_promise_signal ---------------------------------------------
+
+@test "extract_promise_signal: BEAD_DONE wins over stray COMPLETE prose" {
+  # Regression: ralph.sh used to grep the whole transcript for COMPLETE
+  # before BEAD_DONE, so a successful iteration that mentioned COMPLETE in
+  # explanatory text stopped the outer loop after one bead.
+  output=$'work completed\n<promise>BEAD_DONE</promise>\nDo not emit <promise>COMPLETE</promise> until bd ready is empty.'
+  run bash -c 'source "$0"; extract_promise_signal <<<"$1"' "$PROJECT_ROOT/scripts/ralph/lib.sh" "$output"
+  [ "$status" -eq 0 ]
+  [ "$output" = "BEAD_DONE" ]
+}
+
+@test "extract_promise_signal: returns COMPLETE from standalone signal line" {
+  output=$'No beads ready.\n<promise>COMPLETE</promise>'
+  run bash -c 'source "$0"; extract_promise_signal <<<"$1"' "$PROJECT_ROOT/scripts/ralph/lib.sh" "$output"
+  [ "$status" -eq 0 ]
+  [ "$output" = "COMPLETE" ]
+}
+
+@test "extract_promise_signal: ignores inline quoted promise tags" {
+  output='The available signals include <promise>COMPLETE</promise>.'
+  run bash -c 'source "$0"; extract_promise_signal <<<"$1"' "$PROJECT_ROOT/scripts/ralph/lib.sh" "$output"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 # --- compute_confidence --------------------------------------------------
 #
 # Single-axis routing: gate=PASS → HIGH, anything else → LOW. The prior
