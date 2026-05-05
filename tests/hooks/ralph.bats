@@ -73,6 +73,89 @@ teardown() {
   [ -z "$output" ]
 }
 
+# --- tracker_has_unfinished_beads ---------------------------------------
+
+@test "tracker_has_unfinished_beads: returns 0 when open beads exist" {
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
+#!/bin/bash
+if [[ "$1 $2" == "list --status=open" ]]; then
+  printf '%s\n' '[{"id":"agent-template-open"}]'
+elif [[ "$1 $2" == "list --status=in_progress" ]]; then
+  printf '%s\n' '[]'
+else
+  exit 1
+fi
+EOF
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  run tracker_has_unfinished_beads
+  [ "$status" -eq 0 ]
+}
+
+@test "tracker_has_unfinished_beads: returns 0 when an in-progress bead exists" {
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
+#!/bin/bash
+if [[ "$1 $2" == "list --status=open" ]]; then
+  printf '%s\n' '[]'
+elif [[ "$1 $2" == "list --status=in_progress" ]]; then
+  printf '%s\n' '[{"id":"agent-template-live"}]'
+else
+  exit 1
+fi
+EOF
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  run tracker_has_unfinished_beads
+  [ "$status" -eq 0 ]
+}
+
+@test "tracker_has_unfinished_beads: returns 1 when open and in-progress lists are empty" {
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "list" ]]; then
+  printf '%s\n' '[]'
+else
+  exit 1
+fi
+EOF
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  run tracker_has_unfinished_beads
+  [ "$status" -eq 1 ]
+}
+
+@test "tracker_has_unfinished_beads: returns 2 on bd failure" {
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  run tracker_has_unfinished_beads
+  [ "$status" -eq 2 ]
+}
+
+@test "tracker_has_unfinished_beads: returns 2 on non-parseable JSON" {
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
+#!/bin/bash
+printf '%s\n' 'not-json'
+EOF
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  run tracker_has_unfinished_beads
+  [ "$status" -eq 2 ]
+}
+
 # --- compute_confidence --------------------------------------------------
 #
 # Single-axis routing: gate=PASS → HIGH, anything else → LOW. The prior
@@ -751,6 +834,89 @@ EOF
   out=$(eval "$block")
   [[ "$out" == *"[impl] — impl: foo"* ]]
   [[ "$out" != *"Description:"* ]] || { echo "spurious Description line: $out"; return 1; }
+}
+
+# --- ralph.sh COMPLETE routing -----------------------------------------
+
+@test "ralph.sh COMPLETE branch exits only when tracker_has_unfinished_beads says none remain" {
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*# Check for completion signal/ { capture=1 }
+    capture && /^[[:space:]]*# Check for rate limit signal/ { exit }
+    capture { print }
+  ' "$ralph")
+  [ -n "$block" ]
+
+  _RALPH_PROMISE_SIGNAL="COMPLETE"
+  _RALPH_I=4
+  _RALPH_MAX_ITERATIONS=30
+  FINISH_CALLED=""
+  finish() { FINISH_CALLED="$1|$2"; }
+  tracker_has_unfinished_beads() { return 1; }
+
+  set +e
+  for _loop_once in 1; do
+    eval "$block"
+  done
+  set -e
+
+  [ "$FINISH_CALLED" = "0|Ralph completed all tasks at iteration 4 of 30." ]
+}
+
+@test "ralph.sh COMPLETE branch rejects COMPLETE when unfinished beads remain" {
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*# Check for completion signal/ { capture=1 }
+    capture && /^[[:space:]]*# Check for rate limit signal/ { exit }
+    capture { print }
+  ' "$ralph")
+  [ -n "$block" ]
+
+  _RALPH_PROMISE_SIGNAL="COMPLETE"
+  _RALPH_I=4
+  _RALPH_MAX_ITERATIONS=30
+  FINISH_CALLED=""
+  finish() { FINISH_CALLED="$1|$2"; }
+  tracker_has_unfinished_beads() { return 0; }
+
+  out_file="$TMPDIR_TEST/complete-warning.txt"
+  : > "$out_file"
+  set +e
+  for _loop_once in 1; do
+    eval "$block" > "$out_file"
+  done
+  set -e
+  out=$(cat "$out_file")
+
+  [ -z "$FINISH_CALLED" ]
+  [ -z "$_RALPH_PROMISE_SIGNAL" ]
+  [[ "$out" == *"WARNING: Agent emitted COMPLETE, but open or in-progress beads remain. Continuing."* ]] \
+    || { echo "Got: $out"; return 1; }
+}
+
+@test "ralph.sh COMPLETE branch exits safely when tracker state cannot be verified" {
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*# Check for completion signal/ { capture=1 }
+    capture && /^[[:space:]]*# Check for rate limit signal/ { exit }
+    capture { print }
+  ' "$ralph")
+  [ -n "$block" ]
+
+  _RALPH_PROMISE_SIGNAL="COMPLETE"
+  _RALPH_I=4
+  _RALPH_MAX_ITERATIONS=30
+  FINISH_CALLED=""
+  finish() { FINISH_CALLED="$1|$2"; }
+  tracker_has_unfinished_beads() { return 2; }
+
+  set +e
+  for _loop_once in 1; do
+    eval "$block"
+  done
+  set -e
+
+  [ "$FINISH_CALLED" = "1|Ralph received COMPLETE at iteration 4, but tracker state could not be verified. Exiting safely." ]
 }
 
 # --- ralph.sh confidence.log emission ----------------------------------

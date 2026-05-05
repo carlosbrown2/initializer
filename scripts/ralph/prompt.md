@@ -26,7 +26,7 @@ The bead-type-specific contracts below add further requirements per type. They d
 
 These are the states that must hold before you exit. Sequence the work however you like — but every state below must be true when you emit your exit signal. Use the bead-type contracts below to know what "the bead's work is complete" means for your specific type.
 
-- **A bead has been claimed or resumed.** If `bd ready` returns nothing, emit `<promise>COMPLETE</promise>` and stop instead.
+- **A bead has been claimed or resumed.** Emit `<promise>COMPLETE</promise>` only when the tracker has no unfinished beads left (`open` or `in_progress`). `bd ready` being empty is not enough by itself.
 - **`.current-bead-type` exists** and contains exactly one of `impl|review|pare|compound|research`. The pre-commit gate is fail-closed: if you try to commit while a bead is in progress and this marker is missing or invalid, you will be blocked.
 - **For `impl`, `pare`, and `compound` beads, `.current-bead-scope` exists** and lists the in-scope file paths (one per line). The scope hook rejects commits that touch anything outside this list, except for infrastructure paths (the registers, the archive, the bead-marker files; plus `CLAUDE.md`, `docs/skills/`, and `tests/regression/` for compound beads).
 - **If this is a retry** (`scripts/ralph/retry_state.json` shows `fail_count > 0` for this bead), the prior attempt has been diagnosed in `scripts/ralph/archive.txt` and the new approach is *meaningfully different* from the old one. On the third attempt, the strategy is fundamentally different or you have escalated via `BLOCKED`.
@@ -103,7 +103,7 @@ Emit exactly **one** of these. ralph.sh routes on the signal.
 | `<promise>BEAD_DONE</promise>` | Bead completed. Definition of done holds. | Reset retry state, proceed to next iteration. |
 | `<promise>BLOCKED</promise>` followed by `<blocked-reason>...</blocked-reason>` | Architectural concern, missing dependency, contradictory requirements, or 3-fail escalation. | Auto-file a blocker bead, unclaim current bead, proceed. |
 | `<promise>REWORK_REQUIRED</promise>` followed by `<rework-reason>...</rework-reason>` | Prior bead's work is insufficient — current review/pare/compound cannot proceed. | Re-open the prerequisite bead, unclaim current bead, proceed. |
-| `<promise>COMPLETE</promise>` | `bd ready` returns no more work. | Exit the ralph loop. |
+| `<promise>COMPLETE</promise>` | The tracker has no unfinished beads left (`open` or `in_progress`). | Exit the ralph loop. |
 
 ## Progress report format
 

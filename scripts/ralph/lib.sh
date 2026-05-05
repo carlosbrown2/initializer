@@ -29,6 +29,34 @@ extract_promise_signal() {
   sed -nE 's/^[[:space:]]*<promise>(BEAD_DONE|BLOCKED|REWORK_REQUIRED|COMPLETE)<\/promise>[[:space:]]*$/\1/p' | head -1
 }
 
+# Return whether the tracker still has unfinished work.
+#
+# `bd ready` is not a complete definition of "Ralph should exit": it only
+# answers "is there an unblocked bead right now?" The loop's termination
+# condition is stricter: no open beads and no in-progress beads. If the
+# agent emits COMPLETE while either status still exists, the loop must keep
+# running (or fail loudly if tracker state cannot be verified) rather than
+# silently stopping with work stranded in the tracker.
+#
+# Return codes:
+#   0 — unfinished beads exist (open and/or in_progress)
+#   1 — no unfinished beads remain
+#   2 — tracker state could not be verified (bd/jq failure)
+tracker_has_unfinished_beads() {
+  local out open_count in_progress_count
+
+  out=$(bd list --status=open --json 2>/dev/null) || return 2
+  open_count=$(jq -r 'if type == "array" then length else 0 end' <<<"$out" 2>/dev/null) || return 2
+
+  out=$(bd list --status=in_progress --json 2>/dev/null) || return 2
+  in_progress_count=$(jq -r 'if type == "array" then length else 0 end' <<<"$out" 2>/dev/null) || return 2
+
+  if (( open_count > 0 || in_progress_count > 0 )); then
+    return 0
+  fi
+  return 1
+}
+
 # Execute the verification gate command and record the real exit code.
 #
 # Replaces the prior design where the agent ran the gate and self-reported

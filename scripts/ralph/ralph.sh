@@ -23,6 +23,7 @@ _ralph_cleanup() {
   unset _RALPH_I _RALPH_CURRENT_BEAD _RALPH_ACTIVE_BEAD
   unset _RALPH_BEAD_ID _RALPH_BEAD_TITLE _RALPH_OUTPUT
   unset _RALPH_PROMISE_SIGNAL
+  unset _RALPH_TRACKER_STATE
   unset _RALPH_BEAD_TYPE _RALPH_BEAD_DESCRIPTION _RALPH_COMPLETED_SUMMARY
   unset _RALPH_BEAD_DONE _RALPH_BLOCKED_REASON _RALPH_REWORK_REASON
   unset _RALPH_PREREQ_BEAD _RALPH_BLOCKER_TITLE
@@ -326,8 +327,18 @@ RETRY_EOF
 
   # Check for completion signal (all work done)
   if [[ "$_RALPH_PROMISE_SIGNAL" == "COMPLETE" ]]; then
-    finish 0 "Ralph completed all tasks at iteration $_RALPH_I of $_RALPH_MAX_ITERATIONS."
-    break
+    tracker_has_unfinished_beads
+    _RALPH_TRACKER_STATE=$?
+    if [[ $_RALPH_TRACKER_STATE -eq 1 ]]; then
+      finish 0 "Ralph completed all tasks at iteration $_RALPH_I of $_RALPH_MAX_ITERATIONS."
+      break
+    elif [[ $_RALPH_TRACKER_STATE -eq 0 ]]; then
+      echo "WARNING: Agent emitted COMPLETE, but open or in-progress beads remain. Continuing."
+      _RALPH_PROMISE_SIGNAL=""
+    else
+      finish 1 "Ralph received COMPLETE at iteration $_RALPH_I, but tracker state could not be verified. Exiting safely."
+      break
+    fi
   fi
 
   # Check for rate limit signal
