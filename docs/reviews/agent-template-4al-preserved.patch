@@ -1,0 +1,345 @@
+diff --git a/README.md b/README.md
+index f2142b9..8219b5c 100644
+--- a/README.md
++++ b/README.md
+@@ -66,11 +66,13 @@ The initializer walks you through 5 phases. Each phase is an outcome contract 
+    # bats (runs tests/hooks/; part of the verification gate)
+    brew install bats-core      # or: npm install -g bats
+ 
+-   # Secrets scan. Local hooks warn and continue if missing during Phase 1 bootstrap;
+-   # CI installs and runs the scanner fail-closed.
++   # Secrets scan. Local hooks require gitleaks by default; the only exemption
++   # is a bootstrap-only commit with BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1
++   # while no bead is in progress. CI also installs and runs the scanner fail-closed.
+    brew install gitleaks       # or: https://github.com/gitleaks/gitleaks
+ 
+-   # Dependency hallucination detection. Same local fail-warn / CI fail-closed shape as gitleaks.
++   # Dependency hallucination detection. Same bootstrap-only local exemption /
++   # CI fail-closed shape as gitleaks.
+    pip install dep-hallucinator   # or: npm install -g dep-hallucinator
+ 
+    # Pre-commit hooks (optional but recommended)
+@@ -154,8 +156,8 @@ Nine pre-commit hooks ship enabled, plus a commit-msg format hook and a pre-push
+ | Hook | What it enforces |
+ |---|---|
+ | CLAUDE.md size guard | Rejects commits pushing `CLAUDE.md` over 200 lines. Domain knowledge overflows to `docs/skills/` rather than letting the project-rules file accrete. |
+-| Secrets scan | Runs `gitleaks protect --staged` on every commit; rejects commits that contain hardcoded credentials, tokens, or private keys. Local hooks fail-warn if `gitleaks` is not installed so Phase 1 bootstrap is not blocked, while CI installs `gitleaks` and runs `gitleaks detect --source . --redact` fail-closed before the verification gate. |
+-| Dependency hallucination check | Runs `dep-hallucinator check` on staged manifest files (`requirements*.txt`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`); rejects commits that introduce hallucinated or typo-squatted packages. Local hooks fail-warn when the scanner is missing; CI installs `dep-hallucinator` and runs it fail-closed over tracked manifests. |
++| Secrets scan | Runs `gitleaks protect --staged` on every commit; rejects commits that contain hardcoded credentials, tokens, or private keys. Missing `gitleaks` now blocks local commits too, unless a bootstrap-only commit explicitly sets `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1` while no bead is in progress. CI still installs `gitleaks` and runs `gitleaks detect --source . --redact` fail-closed before the verification gate. |
++| Dependency hallucination check | Runs `dep-hallucinator check` on staged manifest files (`requirements*.txt`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`); rejects commits that introduce hallucinated or typo-squatted packages. Missing `dep-hallucinator` blocks local manifest commits too, unless the same bootstrap-only override is explicitly set before any bead is in progress. CI installs `dep-hallucinator` and runs it fail-closed over tracked manifests. |
+ | Bead type fail-closed gate | When a bead is in progress, `.current-bead-type` must exist and hold a valid value (`impl`/`review`/`pare`/`compound`/`research`). Closes the "skip the marker → no enforcement" bypass for the hooks below. Fail-closed on `bd` extraction errors too: if `bd list --status=in_progress --json` fails or returns non-parseable JSON, the commit is BLOCKED rather than silently treated as "no bead in progress". |
+ | Scope enforcement | `impl`/`pare`/`compound` beads must declare `.current-bead-scope`; commits outside the scope are rejected (infrastructure paths exempted; compound beads also get `CLAUDE.md`, `docs/skills/`, and `tests/regression/`). |
+ | Failure-mode register integrity | Every row in `docs/failure-modes.md` is single-line, its last cell holds an acceptable Status (`covered`/`proven-impossible`/`out-of-scope`), and every referenced check file exists on disk. |
+diff --git a/docs/decision-register.md b/docs/decision-register.md
+index d442894..ab81922 100644
+--- a/docs/decision-register.md
++++ b/docs/decision-register.md
+@@ -14,6 +14,7 @@ Every place agent variance can enter this project must appear here, paired with
+ | Tool / search choice | execution | unconstrained — model picks | none (rationale: search strategy is exactly where we want model freedom) | agent-discretion |
+ | Model upgrade drift | model swap | every promoted pattern tagged with source model; retire unless re-validated | upgrade ritual: re-run both registers under the new model before resuming | ritual-bounded |
+ | Scope creep | every commit | `.current-bead-scope` declares allowed paths for impl/pare/compound beads; review/research beads are read-only except for normal infrastructure and the current docs/reviews/<bead-id>.md artifact | scope enforcement and review/research write-protection in scripts/hooks/install.sh | bounded |
++| Bootstrap scanner exemption | template bootstrap commits before normal implementation starts | missing local security scanners are allowed only through the explicit `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1` override, and only while no bead is in progress; once work has entered the bead loop the exemption no longer applies | scripts/hooks/install.sh `bootstrap_scanner_override_active` / `missing_scanner_block` gate both scanner checks; tests/hooks/generated_hooks_e2e.bats pins missing-scanner blocking, the no-bead bootstrap override path, and override rejection after `set_in_progress_bead impl` | bounded |
+ | Artifact format | review / research beads | review artifacts cite the rubric and contain a severity clause | review-bead contract in scripts/ralph/prompt.md; human read of docs/reviews/<bead-id>.md | ritual-bounded |
+ | Sampling variance | every model invocation | non-interactive agent mode (`claude --print`, `codex exec`, or equivalent), single-shot, fresh context per bead | scripts/ralph/ralph.sh invocation; one-bead-per-iteration | bounded |
+ | Confidence | post-agent routing on BEAD_DONE | single-axis: bash-observed gate result is the routing input — PASS → HIGH, anything else → LOW. The prior 4-axis stack (diff size, touched_hooks, touched_claude_md with carve-out) was a hand-calibrated heuristic stacked on top of the gate verdict; the collapse lets the gate be the single source of truth | scripts/ralph/lib.sh compute_confidence is sourced by scripts/ralph/ralph.sh and called on BEAD_DONE with the gate result; scripts/ralph/lib.sh read_auto_land_policy / should_auto_land route the verdict against the `auto-land:` policy in CLAUDE.md; tests/hooks/ralph.bats covers gate-FAIL/SKIPPED/empty terminal LOW, gate-PASS HIGH, and trailing-positional-args silently ignored (pins the "ignore legacy N-arg shape" invariant against re-introduction) | bounded |
+diff --git a/docs/failure-modes.md b/docs/failure-modes.md
+index f0deced..7eb205c 100644
+--- a/docs/failure-modes.md
++++ b/docs/failure-modes.md
+@@ -22,8 +22,8 @@ These rows bind this template's own harness internals (`scripts/ralph/`, `script
+ | scripts/hooks/parsers.sh register-integrity parsers | edge cases (escaped pipes, Unicode, trailing whitespace, 5-column rows, multi-line continuation rows) silently accept malformed rows or reject valid ones; drift between the inlined pre-commit awk and the callable parsers | correctness | tests/hooks/parsers.bats exercises every parser against known-good and known-bad fixtures plus smoke tests against the real registers; scripts/hooks/install.sh sources parsers.sh so there is only one implementation | covered |
+ | CLAUDE.md "## Verification Gate" extractor duplication | the awk that extracts the gate command was duplicated in scripts/hooks/install.sh (pre-push hook heredoc) and tests/gate/gate.bats (setup). Drift between the two makes the gate.bats "gate passes against the current repo" sanity test a proxy for "what gate.bats extracts," not "what the pre-push hook extracts" — so a gate.bats extractor that silently extracts nothing would make every gate assertion vacuously pass while the real pre-push hook happily re-runs a drifted gate | correctness | scripts/hooks/parsers.sh gate_command_extract is the single implementation; the pre-push heredoc in scripts/hooks/install.sh sources parsers.sh and calls the function; tests/gate/gate.bats sources parsers.sh in setup | covered |
+ | scripts/hooks/install.sh bead-type gate, bd extraction | the pre-commit hook conditioned on `IN_PROGRESS_BEAD` which was populated by `bd list \| grep -o ... \| head -1 \|\| true`. If bd's human-readable format drifted, the grep matched nothing and the entire gate chain (bead-type, scope, register integrity) silently no-opped. A malformed bd output was indistinguishable from "no bead in progress," which is exactly the state that disables the chain | correctness | scripts/hooks/parsers.sh bd_bead_in_progress uses `bd --no-daemon list --status=in_progress --json \| jq` and returns non-zero on extraction failure (bd errored or produced non-parseable JSON). scripts/hooks/install.sh pre-commit sources the function and BLOCKS the commit on non-zero — fail-closed rather than fail-open. Phase 1 bootstrap (no bd installed) still passes because the function short-circuits on `command -v bd`. The fail-closed bind lives in install.sh's `if ! IN_PROGRESS_BEAD=$(bd_bead_in_progress); then ... exit 1; fi` block; a regression that swapped it back to a fail-open shape would be visible in the install.sh diff | covered |
+-| scripts/hooks/install.sh secrets-scan hook | hardcoded credentials (API keys, tokens, private keys, .pem material) committed into git history; once pushed, secrets cannot be unleaked even after rotation because mirrors/forks retain the blob | security | scripts/hooks/install.sh pre-commit `gitleaks protect --staged` block fail-closes the commit when gitleaks reports findings and warns only when gitleaks is not installed for Phase 1 bootstrap; .github/workflows/ci.yml installs gitleaks and runs `gitleaks detect --source . --redact` fail-closed; tests/gate/gate.bats pins CI scanner install and fail-closed execution | covered |
+-| scripts/hooks/install.sh dep-hallucinator hook | hallucinated or typo-squatted package added to a staged manifest (requirements.txt, package.json, pyproject.toml, Cargo.toml, go.mod) — a real supply-chain attack vector for LLM-generated code that proposes imports without grounded provenance | dependency | scripts/hooks/install.sh pre-commit `dep-hallucinator check` block runs on staged manifest files only and warns only when dep-hallucinator is not installed for Phase 1 bootstrap; .github/workflows/ci.yml installs dep-hallucinator and runs it fail-closed over tracked manifests; tests/gate/gate.bats pins CI scanner install and fail-closed execution | covered |
++| scripts/hooks/install.sh secrets-scan hook | hardcoded credentials (API keys, tokens, private keys, .pem material) committed into git history because local commits silently skipped gitleaks when the binary was absent; once pushed, secrets cannot be unleaked even after rotation because mirrors/forks retain the blob | security | scripts/hooks/install.sh pre-commit `gitleaks protect --staged` block fail-closes on findings and now also fail-closes when gitleaks is missing unless the explicit bootstrap-only `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1` override is set while no bead is in progress; tests/hooks/generated_hooks_e2e.bats pins block-on-missing, bootstrap-only override, and override rejection once a bead is in progress; .github/workflows/ci.yml installs gitleaks and runs `gitleaks detect --source . --redact` fail-closed | covered |
++| scripts/hooks/install.sh dep-hallucinator hook | hallucinated or typo-squatted package added to a staged manifest (requirements.txt, package.json, pyproject.toml, Cargo.toml, go.mod) because local commits silently skipped dependency validation when the scanner binary was absent | dependency | scripts/hooks/install.sh pre-commit `dep-hallucinator check` block runs on staged manifest files and now fail-closes when dep-hallucinator is missing unless the explicit bootstrap-only `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1` override is set while no bead is in progress; tests/hooks/generated_hooks_e2e.bats pins block-on-missing plus the bootstrap-only override path; .github/workflows/ci.yml installs dep-hallucinator and runs it fail-closed over tracked manifests | covered |
+ | scripts/hooks/install.sh review/research write-protection | review and research bead contracts are read-only in prose, but staged source edits can slip through unless the generated pre-commit hook rejects any non-infrastructure path outside the current bead's own docs/reviews/<bead-id>.md artifact | correctness | tests/hooks/pre_commit.bats exercises generated pre-commit hooks end-to-end for review/research source-edit rejection, current-artifact acceptance, infrastructure-path acceptance, and different-artifact rejection | covered |
+ | scripts/hooks/install.sh generated hook heredocs | generated pre-commit, commit-msg, and pre-push behavior drifts inside installer heredocs while bash syntax checks and parser unit tests still pass, leaving real git commits or pushes less constrained than the checked-in contracts claim | correctness | tests/hooks/generated_hooks_e2e.bats installs the real hooks into scratch git repos, drives representative good and bad commits, mocks optional scanners, and exercises generated pre-push gate extraction with `git push --dry-run` | covered |
+ | .github/workflows/ci.yml verification-gate job | CI manually mirrors the CLAUDE.md verification gate and silently drifts from the single merge contract used by Ralph and the pre-push hook, so pull requests can pass a different command than the one required locally | correctness | tests/gate/gate.bats checks that the workflow sources scripts/hooks/parsers.sh, calls gate_command_extract CLAUDE.md, runs bash -c "$GATE_CMD", fails closed on an empty extraction, and does not contain the old manual `bash -n scripts/ralph/ralph.sh` chain in the gate step | covered |
+@@ -31,8 +31,6 @@ These rows bind this template's own harness internals (`scripts/ralph/`, `script
+ | scripts/ralph/ralph.sh tool selection | the Ralph loop is accidentally hard-coded to one agent CLI, or docs advertise a supported tool that the loop rejects or invokes interactively | correctness | tests/hooks/ralph.bats pins the accepted tool list (`claude`, `codex`, `amp`) and the Codex non-interactive `codex exec` invocation; README.md documents Codex usage | covered |
+ | scripts/ralph/ralph.sh promise routing | Ralph exits after one successful bead when the agent transcript contains a stray inline `<promise>COMPLETE</promise>` mention alongside the real `<promise>BEAD_DONE</promise>` signal, because routing greps the whole transcript for COMPLETE before BEAD_DONE instead of parsing the standalone signal line | correctness | tests/hooks/ralph.bats covers extract_promise_signal selecting standalone BEAD_DONE over stray COMPLETE prose, accepting standalone COMPLETE, and ignoring inline quoted promise tags | covered |
+ | scripts/ralph/ralph.sh post-BEAD_DONE landing path | Ralph logs `Auto-land` after a green bead but never actually performs `git pull --rebase`, `bd sync`, `git push`, or the final origin-parity check, leaving completed work stranded locally; the inverse failure is a dirty worktree at BEAD_DONE time, where a blind auto-push would either fail later or hide the missing implementation commit | operational | scripts/ralph/lib.sh auto_land_bead fail-closes on a dirty pre-land tree, unexpected bd-sync diffs, push failures, and post-push upstream mismatch; tests/hooks/ralph.bats covers dirty-tree rejection, successful landing, and ralph.sh stop-on-landing-failure routing | covered |
+-| scripts/ralph/lib.sh git index writability preflight | Ralph discovers too late that the repository cannot create `.git/index.lock`, so work runs in an environment that cannot stage or commit; stale lock files or stripped write bits could have been repaired before the loop started | operational | scripts/ralph/lib.sh ensure_git_index_writable removes stale locks, retries after `chmod u+w` on the git dir and index, and tests/hooks/ralph.bats covers both repair success and irreparable failure | covered |
+-| scripts/ralph/lib.sh BLOCKED routing | Ralph treats a terminal environment failure (for example git cannot create `.git/index.lock`, so no bead can be committed) like an ordinary bead blocker and keeps iterating forever, accumulating blocker beads without any chance of reaching Definition of Done in the current environment | operational | scripts/ralph/lib.sh blocked_reason_requires_loop_stop classifies `ENVIRONMENT_BLOCKED:` reasons plus the legacy `.git/index.lock` wording, and tests/hooks/ralph.bats covers both helper classification and handle_iteration_signal finishing the loop on that class | covered |
+ | docs/failure-modes.md covered-row gate binding | a `covered` row cites an existing check file that is not actually run by `CLAUDE.md`'s verification gate, turning the register into a documentation-only claim instead of a falsifiable merge check | correctness | tests/hooks/parsers.bats covers fm_gate_refs_check accept/reject cases for direct file refs, gated directories, absent checks, non-covered rows, and the real register smoke test; scripts/hooks/install.sh calls fm_gate_refs_check during pre-commit so covered rows with absent gate refs are blocked | covered |
+ | scripts/ralph/ralph.sh iteration banner | Ralph dumps the full bead description and verbatim acceptance list into the operator-facing CLI banner, pushing useful routing/gate output out of view during each iteration | operational | tests/hooks/ralph.bats covers _ralph_work_summary trimming the description before the acceptance block, _ralph_acceptance_summary counting criteria while omitting later bullet text, and the banner block printing compact Work and Acceptance lines without the old Description dump | covered |
+ | template starter auto-land posture (`CLAUDE.md`, README.md, project-kickoff-prompt.md) | docs describe `auto-land: high` as the downstream default but the shipped template still declares `auto-land: all`, so fresh projects inherit a more permissive landing policy than the documentation and safety posture claim | correctness | tests/hooks/ralph.bats pins `read_auto_land_policy "$PROJECT_ROOT/CLAUDE.md"` to `high`, checks README.md for the `high` shipped-default wording, rejects the old "template's own CLAUDE uses all" claim, and checks project-kickoff-prompt.md for the same shipped-default wording | covered |
+diff --git a/scripts/hooks/install.sh b/scripts/hooks/install.sh
+index ad8a2a9..d3fcda3 100644
+--- a/scripts/hooks/install.sh
++++ b/scripts/hooks/install.sh
+@@ -4,9 +4,9 @@
+ #
+ # Hooks installed (pre-commit, in execution order inside the hook):
+ #   1. CLAUDE.md size guard
+-#   2. Secrets scan (gitleaks; warns and continues if gitleaks not installed)
+-#   3. Dependency hallucination check (active; warns if dep-hallucinator not installed)
+-#   4. Bead type fail-closed gate (fail-closed on bd extraction failure)
++#   2. Bead type fail-closed gate (fail-closed on bd extraction failure)
++#   3. Secrets scan (gitleaks; missing binary blocks unless explicit bootstrap override is set)
++#   4. Dependency hallucination check (missing scanner blocks unless explicit bootstrap override is set)
+ #   5. Scope enforcement
+ #   6. Failure-mode register integrity
+ #   7. Decision register integrity
+@@ -26,6 +26,7 @@ set -euo pipefail
+ HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ PROJECT_ROOT="$(cd "$HOOKS_DIR/../.." && pwd)"
+ GIT_HOOKS_DIR="$PROJECT_ROOT/.git/hooks"
++LOCAL_SCANNER_BOOTSTRAP_ENV="BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS"
+ 
+ if [ ! -d "$GIT_HOOKS_DIR" ]; then
+   echo "Error: .git/hooks not found. Run 'git init' first."
+@@ -40,6 +41,7 @@ set -euo pipefail
+ 
+ PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+ CLAUDE_MD_MAX_LINES=200
++LOCAL_SCANNER_BOOTSTRAP_ENV="BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS"
+ 
+ # Register-integrity parsers live in scripts/hooks/parsers.sh so they can be
+ # exercised by tests/hooks/parsers.bats outside a live pre-commit context.
+@@ -68,53 +70,6 @@ if git diff --cached --name-only | grep -q "^CLAUDE.md$"; then
+   fi
+ fi
+ 
+-# --- Secrets scan ---
+-# gitleaks scans staged changes for hardcoded credentials (API keys, tokens,
+-# private keys, etc.). For a backend that handles customer data + LLM API
+-# keys + model-generated SQL, a leaked credential is a P0 incident class
+-# with no other mechanical check in this chain. The block is fail-warn if
+-# gitleaks is not installed (so Phase 1 bootstrap on a fresh machine is not
+-# blocked) but fail-closed if gitleaks is installed and reports findings.
+-# Install once and the warning goes away; once installed, it stays binding.
+-if command -v gitleaks >/dev/null 2>&1; then
+-  if ! gitleaks protect --staged --no-banner --redact; then
+-    echo ""
+-    echo "BLOCKED: gitleaks detected potential secrets in staged changes."
+-    echo ""
+-    echo "  Review the findings above. If a finding is a verified false positive,"
+-    echo "  add its fingerprint to .gitleaksignore (one per line) and re-stage."
+-    echo "  Never bypass with --no-verify — leaked secrets cannot be unleaked."
+-    exit 1
+-  fi
+-else
+-  echo "WARNING: gitleaks not installed; skipping secrets scan."
+-  echo "  Install: brew install gitleaks   (or: https://github.com/gitleaks/gitleaks)"
+-fi
+-
+-# --- Dependency hallucination check ---
+-# dep-hallucinator scans staged manifest files for hallucinated/typo-squatted
+-# packages — a real attack surface for LLM-generated code that proposes
+-# imports. Fail-warn if dep-hallucinator is not installed (Phase 1 bootstrap
+-# may run before tooling is present) but fail-closed if it is installed and
+-# reports findings on a staged manifest.
+-MANIFEST_FILES=$(git diff --cached --name-only | grep -E '(requirements.*\.txt|package\.json|pyproject\.toml|Cargo\.toml|go\.mod)' || true)
+-if [ -n "$MANIFEST_FILES" ]; then
+-  if command -v dep-hallucinator >/dev/null 2>&1; then
+-    # shellcheck disable=SC2086  # MANIFEST_FILES is intentionally word-split.
+-    if ! dep-hallucinator check $MANIFEST_FILES; then
+-      echo "BLOCKED: dep-hallucinator detected suspect dependencies in staged manifests."
+-      echo ""
+-      echo "  Review the findings above. Each flagged package is a candidate for typo-squat,"
+-      echo "  hallucination, or supply-chain risk — verify upstream provenance before merging."
+-      echo "  Never bypass with --no-verify — hallucinated deps are an exploitable vector."
+-      exit 1
+-    fi
+-  else
+-    echo "WARNING: dep-hallucinator not installed; skipping dependency validation."
+-    echo "  Install: pip install dep-hallucinator   (or: npm install -g dep-hallucinator)"
+-  fi
+-fi
+-
+ # --- Bead type detection (fail-closed on bd errors too) ---
+ # When a bead is in progress (per the beads CLI), .current-bead-type MUST exist
+ # and hold a valid value. Previously this block conditioned on a grep-based
+@@ -145,6 +100,28 @@ if command -v bd >/dev/null 2>&1; then
+   fi
+ fi
+ 
++bootstrap_scanner_override_active() {
++  [ -z "$IN_PROGRESS_BEAD" ] && [ "${!LOCAL_SCANNER_BOOTSTRAP_ENV:-}" = "1" ]
++}
++
++missing_scanner_block() {
++  local scanner_name="$1"
++  local install_hint="$2"
++  echo "BLOCKED: $scanner_name is required for local commits but is not installed."
++  echo ""
++  echo "  Install: $install_hint"
++  echo "  If you are still bootstrapping and no bead is in progress, retry only this"
++  echo "  commit with $LOCAL_SCANNER_BOOTSTRAP_ENV=1 to acknowledge the temporary risk."
++  echo "  Once normal implementation begins, missing scanners fail closed."
++  exit 1
++}
++
++missing_scanner_bootstrap_warning() {
++  local scanner_name="$1"
++  echo "WARNING: $scanner_name is not installed, but $LOCAL_SCANNER_BOOTSTRAP_ENV=1"
++  echo "  is allowing this bootstrap-only commit to proceed."
++}
++
+ if [ -n "$IN_PROGRESS_BEAD" ]; then
+   case "$BEAD_TYPE" in
+     impl|review|pare|compound|research)
+@@ -171,6 +148,53 @@ if [ -n "$IN_PROGRESS_BEAD" ]; then
+   esac
+ fi
+ 
++# --- Secrets scan ---
++# gitleaks scans staged changes for hardcoded credentials (API keys, tokens,
++# private keys, etc.). For a backend that handles customer data + LLM API
++# keys + model-generated SQL, a leaked credential is a P0 incident class
++# with no other mechanical check in this chain. Missing local scanners now
++# fail closed by default; the only exception is an explicit bootstrap-only
++# one-shot override before any bead is in progress.
++if command -v gitleaks >/dev/null 2>&1; then
++  if ! gitleaks protect --staged --no-banner --redact; then
++    echo ""
++    echo "BLOCKED: gitleaks detected potential secrets in staged changes."
++    echo ""
++    echo "  Review the findings above. If a finding is a verified false positive,"
++    echo "  add its fingerprint to .gitleaksignore (one per line) and re-stage."
++    echo "  Never bypass with --no-verify — leaked secrets cannot be unleaked."
++    exit 1
++  fi
++elif bootstrap_scanner_override_active; then
++  missing_scanner_bootstrap_warning "gitleaks"
++else
++  missing_scanner_block "gitleaks" "brew install gitleaks   (or: https://github.com/gitleaks/gitleaks)"
++fi
++
++# --- Dependency hallucination check ---
++# dep-hallucinator scans staged manifest files for hallucinated/typo-squatted
++# packages — a real attack surface for LLM-generated code that proposes
++# imports. Missing local scanners fail closed by default; the bootstrap-only
++# override above is the only exemption, and only before a bead is active.
++MANIFEST_FILES=$(git diff --cached --name-only | grep -E '(requirements.*\.txt|package\.json|pyproject\.toml|Cargo\.toml|go\.mod)' || true)
++if [ -n "$MANIFEST_FILES" ]; then
++  if command -v dep-hallucinator >/dev/null 2>&1; then
++    # shellcheck disable=SC2086  # MANIFEST_FILES is intentionally word-split.
++    if ! dep-hallucinator check $MANIFEST_FILES; then
++      echo "BLOCKED: dep-hallucinator detected suspect dependencies in staged manifests."
++      echo ""
++      echo "  Review the findings above. Each flagged package is a candidate for typo-squat,"
++      echo "  hallucination, or supply-chain risk — verify upstream provenance before merging."
++      echo "  Never bypass with --no-verify — hallucinated deps are an exploitable vector."
++      exit 1
++    fi
++  elif bootstrap_scanner_override_active; then
++    missing_scanner_bootstrap_warning "dep-hallucinator"
++  else
++    missing_scanner_block "dep-hallucinator" "pip install dep-hallucinator   (or: npm install -g dep-hallucinator)"
++  fi
++fi
++
+ # --- Scope enforcement (bead-level) ---
+ SCOPE_FILE="$PROJECT_ROOT/.current-bead-scope"
+ 
+@@ -605,7 +629,7 @@ echo "  - Pre-commit: Failure-mode register integrity (active — fires only if
+ echo "  - Pre-commit: Decision register integrity + bounding-mechanism file refs (active — fires only if docs/decision-register.md exists)"
+ echo "  - Pre-commit: CLAUDE.md model-tag validator (active — fires only if CLAUDE.md is staged)"
+ echo "  - Pre-commit: CLAUDE.md size guard (active)"
+-echo "  - Pre-commit: Secrets scan (active — runs gitleaks if installed; warns and continues otherwise)"
+-echo "  - Pre-commit: Dependency hallucination check (active — runs dep-hallucinator on staged manifests if installed; warns and continues otherwise)"
++echo "  - Pre-commit: Secrets scan (active — gitleaks required unless bootstrap commit sets $LOCAL_SCANNER_BOOTSTRAP_ENV=1)"
++echo "  - Pre-commit: Dependency hallucination check (active — dep-hallucinator required for staged manifests unless bootstrap commit sets $LOCAL_SCANNER_BOOTSTRAP_ENV=1)"
+ echo "  - Commit-msg: Format validation (active — [bead-id] - <title> enforced for bead commits)"
+ echo "  - Pre-push:   Verification gate re-run (active — extracts gate from CLAUDE.md and compares against .last-gate-result if present)"
+diff --git a/tests/hooks/generated_hooks_e2e.bats b/tests/hooks/generated_hooks_e2e.bats
+index c72cc20..c1b4238 100644
+--- a/tests/hooks/generated_hooks_e2e.bats
++++ b/tests/hooks/generated_hooks_e2e.bats
+@@ -88,6 +88,15 @@ git_commit() {
+   ( cd "$TEST_REPO" && PATH="$BIN_DIR:$PATH" git commit -q -m "$1" )
+ }
+ 
++git_commit_with_bootstrap_override() {
++  (
++    cd "$TEST_REPO" &&
++      BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1 \
++      PATH="$BIN_DIR:$PATH" \
++      git commit -q -m "$1"
++  )
++}
++
+ set_in_progress_bead() {
+   printf '[{"id":"agent-template-3ne"}]\n' > "$TMPDIR_TEST/bd-state.json"
+   printf '%s\n' "$1" > "$TEST_REPO/.current-bead-type"
+@@ -151,15 +160,49 @@ set_mock_graph_issue() {
+   [[ "$output" == *"BLOCKED: dep-hallucinator detected suspect dependencies"* ]]
+ }
+ 
+-@test "generated pre-commit warns but permits commit when optional scanners are missing" {
+-  rm "$BIN_DIR/gitleaks" "$BIN_DIR/dep-hallucinator"
++@test "generated pre-commit blocks when gitleaks is missing without bootstrap override" {
++  rm "$BIN_DIR/gitleaks"
++  printf 'notes\n' > "$TEST_REPO/notes.txt"
++  git -C "$TEST_REPO" add notes.txt
++
++  run git_commit "chore: add package manifest"
++  [ "$status" -ne 0 ]
++  [[ "$output" == *"BLOCKED: gitleaks is required for local commits but is not installed."* ]]
++  [[ "$output" == *"BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1"* ]]
++}
++
++@test "generated pre-commit blocks when dep-hallucinator is missing without bootstrap override" {
++  rm "$BIN_DIR/dep-hallucinator"
+   printf '{"dependencies":{"left-pad":"1.3.0"}}\n' > "$TEST_REPO/package.json"
+   git -C "$TEST_REPO" add package.json
+ 
+   run git_commit "chore: add package manifest"
++  [ "$status" -ne 0 ]
++  [[ "$output" == *"BLOCKED: dep-hallucinator is required for local commits but is not installed."* ]]
++  [[ "$output" == *"BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1"* ]]
++}
++
++@test "generated pre-commit permits explicit bootstrap override when no bead is in progress" {
++  rm "$BIN_DIR/gitleaks" "$BIN_DIR/dep-hallucinator"
++  printf '{"dependencies":{"left-pad":"1.3.0"}}\n' > "$TEST_REPO/package.json"
++  git -C "$TEST_REPO" add package.json
++
++  run git_commit_with_bootstrap_override "chore: add package manifest"
+   [ "$status" -eq 0 ]
+-  [[ "$output" == *"WARNING: gitleaks not installed"* ]]
+-  [[ "$output" == *"WARNING: dep-hallucinator not installed"* ]]
++  [[ "$output" == *"WARNING: gitleaks is not installed, but BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1"* ]]
++  [[ "$output" == *"WARNING: dep-hallucinator is not installed, but BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1"* ]]
++}
++
++@test "generated pre-commit ignores bootstrap override once a bead is in progress" {
++  set_in_progress_bead impl
++  printf 'allowed.txt\n' > "$TEST_REPO/.current-bead-scope"
++  rm "$BIN_DIR/gitleaks"
++  printf 'allowed\n' > "$TEST_REPO/allowed.txt"
++  git -C "$TEST_REPO" add allowed.txt
++
++  run git_commit_with_bootstrap_override "feat: [agent-template-3ne] - Add allowed file"
++  [ "$status" -ne 0 ]
++  [[ "$output" == *"BLOCKED: gitleaks is required for local commits but is not installed."* ]]
+ }
+ 
+ @test "generated pre-push extracts and runs the CLAUDE.md verification gate" {
+diff --git a/tests/hooks/pre_commit.bats b/tests/hooks/pre_commit.bats
+index 7b3cda8..cc70db1 100644
+--- a/tests/hooks/pre_commit.bats
++++ b/tests/hooks/pre_commit.bats
+@@ -29,6 +29,18 @@ exit 1
+ EOF
+   chmod +x "$TMPDIR_TEST/bin/bd"
+ 
++  cat > "$TMPDIR_TEST/bin/gitleaks" <<'EOF'
++#!/bin/bash
++exit 0
++EOF
++  chmod +x "$TMPDIR_TEST/bin/gitleaks"
++
++  cat > "$TMPDIR_TEST/bin/dep-hallucinator" <<'EOF'
++#!/bin/bash
++exit 0
++EOF
++  chmod +x "$TMPDIR_TEST/bin/dep-hallucinator"
++
+   PATH="$TMPDIR_TEST/bin:$PATH" bash "$TEST_REPO/scripts/hooks/install.sh" >/dev/null
+ }
+ 

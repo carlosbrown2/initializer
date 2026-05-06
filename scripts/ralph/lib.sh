@@ -134,6 +134,11 @@ git_worktree_clean() {
   [ -z "$status_out" ]
 }
 
+git_worktree_status() {
+  local repo_root="$1"
+  git -C "$repo_root" status --porcelain 2>/dev/null
+}
+
 # Run the post-BEAD_DONE landing ritual.
 #
 # The agent is responsible for the bead's implementation commit before it

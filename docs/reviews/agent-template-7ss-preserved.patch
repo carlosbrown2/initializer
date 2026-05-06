@@ -1,0 +1,365 @@
+diff --git a/scripts/ralph/lib.sh b/scripts/ralph/lib.sh
+index b2e81f6..e9cea2c 100644
+--- a/scripts/ralph/lib.sh
++++ b/scripts/ralph/lib.sh
+@@ -57,70 +57,6 @@ tracker_has_unfinished_beads() {
+   return 1
+ }
+ 
+-# Return 0 when the repo can create `.git/index.lock`, repairing stale or
+-# read-only index state first when that is enough to restore progress.
+-#
+-# This is intentionally more aggressive than a bare permission probe:
+-# 1. remove any stale lock file
+-# 2. try a create/remove probe
+-# 3. if that fails, chmod the git dir and index file writable and retry
+-#
+-# If the second probe still fails, the environment is genuinely blocking git
+-# writes and the caller should treat that as a hard blocker.
+-ensure_git_index_writable() {
+-  local repo_root="$1"
+-  local git_dir index_path lock_path
+-
+-  git_dir=$(git -C "$repo_root" rev-parse --git-dir 2>/dev/null) || return 1
+-  index_path=$(git -C "$repo_root" rev-parse --git-path index 2>/dev/null) || return 1
+-  lock_path=$(git -C "$repo_root" rev-parse --git-path index.lock 2>/dev/null) || return 1
+-
+-  [[ "$git_dir" = /* ]] || git_dir="$repo_root/$git_dir"
+-  [[ "$index_path" = /* ]] || index_path="$repo_root/$index_path"
+-  [[ "$lock_path" = /* ]] || lock_path="$repo_root/$lock_path"
+-
+-  rm -f "$lock_path" 2>/dev/null || true
+-  if : > "$lock_path" 2>/dev/null; then
+-    rm -f "$lock_path" 2>/dev/null || true
+-    return 0
+-  fi
+-
+-  chmod u+w "$git_dir" "$index_path" 2>/dev/null || true
+-  if : > "$lock_path" 2>/dev/null; then
+-    rm -f "$lock_path" 2>/dev/null || true
+-    return 0
+-  fi
+-
+-  return 1
+-}
+-
+-# Return 0 when a BLOCKED reason means the current environment, not the
+-# current bead, is the blocker and Ralph should stop rather than continue.
+-#
+-# Preferred contract: agents prefix these reasons with
+-# `ENVIRONMENT_BLOCKED:`. Keep a narrow legacy fallback for the already-seen
+-# git-index failures so older prompt text still stops safely.
+-blocked_reason_requires_loop_stop() {
+-  local reason="${1:-}"
+-  local normalized
+-
+-  normalized=$(printf '%s' "$reason" | tr '[:upper:]' '[:lower:]')
+-
+-  case "$normalized" in
+-    environment_blocked:*)
+-      return 0
+-      ;;
+-    *"cannot reach definition of done in this environment"*)
+-      return 0
+-      ;;
+-    *".git/index.lock"*|*"git cannot write the index"*)
+-      return 0
+-      ;;
+-  esac
+-
+-  return 1
+-}
+-
+ # Return 0 when the repo worktree is clean, non-zero otherwise.
+ #
+ # Uses `git status --porcelain` so tracked edits, staged changes, and
+@@ -154,11 +90,6 @@ auto_land_bead() {
+   local bead_id="$2"
+   local status_out path line upstream_ref head_ref upstream_head
+ 
+-  if ! ensure_git_index_writable "$repo_root"; then
+-    printf 'GIT_INDEX_UNWRITABLE\n'
+-    return 1
+-  fi
+-
+   if ! git_worktree_clean "$repo_root"; then
+     printf 'DIRTY_WORKTREE_BEFORE_LAND\n'
+     return 1
+@@ -475,13 +406,6 @@ handle_iteration_signal() {
+     _RALPH_FAIL_COUNT=0
+     _RALPH_LAST_FAILED_BEAD=""
+     rm -f "$_RALPH_RETRY_STATE_FILE"
+-
+-    if blocked_reason_requires_loop_stop "$_RALPH_BLOCKED_REASON"; then
+-      _RALPH_SIGNAL_ACTION="finish"
+-      _RALPH_SIGNAL_FINISH_CODE=1
+-      _RALPH_SIGNAL_FINISH_MESSAGE="Ralph hit a terminal environment blocker at iteration $_RALPH_I for ${_RALPH_ACTIVE_BEAD:-unknown}: $_RALPH_BLOCKED_REASON"
+-      echo "  Terminal environment blocker detected. Exiting safely."
+-    fi
+     return 0
+   fi
+ 
+diff --git a/scripts/ralph/prompt.md b/scripts/ralph/prompt.md
+index 752746b..92d2235 100644
+--- a/scripts/ralph/prompt.md
++++ b/scripts/ralph/prompt.md
+@@ -103,7 +103,7 @@ Emit exactly **one** of these. ralph.sh routes on the signal.
+ | Signal | When to use | Effect |
+ |--------|------------|--------|
+ | `<promise>BEAD_DONE</promise>` | Bead completed. Definition of done holds. | Reset retry state, proceed to next iteration. |
+-| `<promise>BLOCKED</promise>` followed by `<blocked-reason>...</blocked-reason>` | Architectural concern, missing dependency, contradictory requirements, 3-fail escalation, or an environment blocker that prevents Ralph from reaching Definition of Done in the current environment. Prefix environment-level blockers with `ENVIRONMENT_BLOCKED:` (for example `.git/index.lock` cannot be created). | Auto-file a blocker bead, unclaim current bead, and usually proceed. `ENVIRONMENT_BLOCKED:` reasons are treated as a hard stop instead of continuing iterations. |
++| `<promise>BLOCKED</promise>` followed by `<blocked-reason>...</blocked-reason>` | Architectural concern, missing dependency, contradictory requirements, or 3-fail escalation. | Auto-file a blocker bead, unclaim current bead, proceed. |
+ | `<promise>REWORK_REQUIRED</promise>` followed by `<rework-reason>...</rework-reason>` | Prior bead's work is insufficient — current review/pare/compound cannot proceed. | Re-open the prerequisite bead, unclaim current bead, proceed. |
+ | `<promise>COMPLETE</promise>` | The tracker has no unfinished beads left (`open` or `in_progress`). | Exit the ralph loop. |
+ 
+diff --git a/scripts/ralph/ralph.sh b/scripts/ralph/ralph.sh
+index a51e4c4..9d29c4f 100755
+--- a/scripts/ralph/ralph.sh
++++ b/scripts/ralph/ralph.sh
+@@ -300,13 +300,6 @@ if [ -z "$_RALPH_GATE_CMD" ]; then
+   return 1
+ fi
+ 
+-if ! ensure_git_index_writable "$_RALPH_PROJECT_ROOT"; then
+-  echo "Error: git index is not writable after repair attempts."
+-  echo "  Ralph needs a writable .git/index.lock to make progress."
+-  _ralph_cleanup
+-  return 1
+-fi
+-
+ # Retry tracking
+ _RALPH_FAIL_COUNT=0
+ _RALPH_LAST_FAILED_BEAD=""
+@@ -395,7 +388,14 @@ RETRY_EOF
+     _RALPH_OUTPUT=$(amp --dangerously-allow-all < "$_RALPH_PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
+   elif [[ "$_RALPH_TOOL" == "codex" ]]; then
+     # Codex CLI: exec mode for non-interactive operation, rooted at the repo.
+-    _RALPH_OUTPUT=$(codex --ask-for-approval never --sandbox workspace-write --cd "$_RALPH_PROJECT_ROOT" exec - < "$_RALPH_PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
++    # The workspace-write sandbox keeps `.git/` read-only by default, which
++    # blocks `git add` / `git commit` (cannot create `.git/index.lock`) and
++    # repeatedly stalls the ralph loop at the bead-completion boundary. Allow
++    # writes to the project's `.git` directory so the loop can land commits.
++    _RALPH_OUTPUT=$(codex \
++      -c "sandbox_workspace_write.writable_roots=[\"${_RALPH_PROJECT_ROOT}/.git\"]" \
++      --ask-for-approval never --sandbox workspace-write \
++      --cd "$_RALPH_PROJECT_ROOT" exec - < "$_RALPH_PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
+   else
+     # Claude Code: --dangerously-skip-permissions for autonomous operation, --print for output
+     _RALPH_OUTPUT=$(claude --dangerously-skip-permissions --print < "$_RALPH_PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
+diff --git a/tests/hooks/ralph.bats b/tests/hooks/ralph.bats
+index 6017774..f359d42 100644
+--- a/tests/hooks/ralph.bats
++++ b/tests/hooks/ralph.bats
+@@ -45,7 +45,13 @@ teardown() {
+ @test "ralph.sh codex branch uses non-interactive exec rooted at the repo" {
+   ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+   grep -qF '[[ "$_RALPH_TOOL" == "codex" ]]' "$ralph"
+-  grep -qF 'codex --ask-for-approval never --sandbox workspace-write --cd "$_RALPH_PROJECT_ROOT" exec - < "$_RALPH_PROMPT_FILE"' "$ralph"
++  grep -qF -e '--ask-for-approval never --sandbox workspace-write' "$ralph"
++  grep -qF -e '--cd "$_RALPH_PROJECT_ROOT" exec - < "$_RALPH_PROMPT_FILE"' "$ralph"
++  # The workspace-write sandbox keeps `.git/` read-only by default, which
++  # would block `git add` / `git commit` (cannot create `.git/index.lock`)
++  # and stall the loop at the bead-completion boundary. The codex invocation
++  # must extend writable_roots to include the project's `.git` directory.
++  grep -qF 'sandbox_workspace_write.writable_roots=[\"${_RALPH_PROJECT_ROOT}/.git\"]' "$ralph"
+ }
+ 
+ # --- extract_promise_signal ---------------------------------------------
+@@ -95,76 +101,6 @@ EOF
+   [ "$status" -eq 0 ]
+ }
+ 
+-# --- ensure_git_index_writable -------------------------------------------
+-
+-@test "ensure_git_index_writable: repairs a writable repo after a stale lock" {
+-  mkdir -p "$TMPDIR_TEST/repo"
+-  git -C "$TMPDIR_TEST/repo" init -q
+-  touch "$TMPDIR_TEST/repo/seed"
+-  git -C "$TMPDIR_TEST/repo" add seed
+-
+-  lock_path="$TMPDIR_TEST/repo/.git/index.lock"
+-  printf 'stale lock\n' > "$lock_path"
+-
+-  run ensure_git_index_writable "$TMPDIR_TEST/repo"
+-  [ "$status" -eq 0 ]
+-  [ ! -e "$lock_path" ]
+-}
+-
+-@test "ensure_git_index_writable: repairs stripped write bits before probing again" {
+-  mkdir -p "$TMPDIR_TEST/repo"
+-  git -C "$TMPDIR_TEST/repo" init -q
+-  touch "$TMPDIR_TEST/repo/seed"
+-  git -C "$TMPDIR_TEST/repo" add seed
+-
+-  git_dir="$TMPDIR_TEST/repo/.git"
+-  index_path="$git_dir/index"
+-  chmod u-w "$git_dir" "$index_path"
+-
+-  run ensure_git_index_writable "$TMPDIR_TEST/repo"
+-  [ "$status" -eq 0 ]
+-  [ ! -e "$git_dir/index.lock" ]
+-}
+-
+-@test "ensure_git_index_writable: returns non-zero when permissions stay blocked" {
+-  mkdir -p "$TMPDIR_TEST/repo"
+-  mkdir -p "$TMPDIR_TEST/bin"
+-  cat > "$TMPDIR_TEST/bin/git" <<EOF
+-#!/bin/bash
+-if [ "\$1" = "-C" ]; then
+-  shift 2
+-fi
+-if [ "\$1 \$2" = "rev-parse --git-dir" ]; then
+-  printf '%s\n' "$TMPDIR_TEST/repo/.git"
+-  exit 0
+-fi
+-if [ "\$1 \$2 \$3" = "rev-parse --git-path index" ]; then
+-  printf '%s\n' "$TMPDIR_TEST/repo/.git/index"
+-  exit 0
+-fi
+-if [ "\$1 \$2 \$3" = "rev-parse --git-path index.lock" ]; then
+-  printf '%s\n' "$TMPDIR_TEST/repo/.git/index.lock"
+-  exit 0
+-fi
+-exit 1
+-EOF
+-  chmod +x "$TMPDIR_TEST/bin/git"
+-  cat > "$TMPDIR_TEST/bin/chmod" <<'EOF'
+-#!/bin/bash
+-exit 1
+-EOF
+-  chmod +x "$TMPDIR_TEST/bin/chmod"
+-  PATH="$TMPDIR_TEST/bin:$PATH"
+-
+-  mkdir -p "$TMPDIR_TEST/repo/.git"
+-  : > "$TMPDIR_TEST/repo/.git/index"
+-  /bin/chmod 0555 "$TMPDIR_TEST/repo/.git"
+-  /bin/chmod 0444 "$TMPDIR_TEST/repo/.git/index"
+-
+-  run ensure_git_index_writable "$TMPDIR_TEST/repo"
+-  [ "$status" -ne 0 ]
+-}
+-
+ @test "tracker_has_unfinished_beads: returns 0 when an in-progress bead exists" {
+   mkdir -p "$TMPDIR_TEST/bin"
+   cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
+@@ -804,55 +740,6 @@ EOF
+   grep -qFx 'push' "$TMPDIR_TEST/git.log"
+ }
+ 
+-@test "auto_land_bead: returns a specific failure when git index remains unwritable" {
+-  mkdir -p "$TMPDIR_TEST/bin"
+-  cat > "$TMPDIR_TEST/bin/git" <<EOF
+-#!/bin/bash
+-if [ "\$1" = "-C" ]; then
+-  shift 2
+-fi
+-if [ "\$1 \$2 \$3" = "rev-parse --git-dir" ]; then
+-  printf '%s\n' "$TMPDIR_TEST/repo/.git"
+-  exit 0
+-fi
+-if [ "\$1 \$2 \$3" = "rev-parse --git-path index" ]; then
+-  printf '%s\n' "$TMPDIR_TEST/repo/.git/index"
+-  exit 0
+-fi
+-if [ "\$1 \$2 \$3" = "rev-parse --git-path index.lock" ]; then
+-  printf '%s\n' "$TMPDIR_TEST/repo/.git/index.lock"
+-  exit 0
+-fi
+-if [ "\$1 \$2" = "status --porcelain" ]; then
+-  exit 0
+-fi
+-if [ "\$1 \$2" = "pull --rebase" ]; then
+-  exit 0
+-fi
+-if [ "\$1" = "add" ] || [ "\$1" = "commit" ] || [ "\$1" = "push" ]; then
+-  exit 0
+-fi
+-echo "unexpected git invocation: \$*" >&2
+-exit 1
+-EOF
+-  chmod +x "$TMPDIR_TEST/bin/git"
+-  cat > "$TMPDIR_TEST/bin/chmod" <<'EOF'
+-#!/bin/bash
+-exit 1
+-EOF
+-  chmod +x "$TMPDIR_TEST/bin/chmod"
+-  PATH="$TMPDIR_TEST/bin:$PATH"
+-
+-  mkdir -p "$TMPDIR_TEST/repo/.git"
+-  : > "$TMPDIR_TEST/repo/.git/index"
+-  /bin/chmod 0555 "$TMPDIR_TEST/repo/.git"
+-  /bin/chmod 0444 "$TMPDIR_TEST/repo/.git/index"
+-
+-  run auto_land_bead "$TMPDIR_TEST/repo" "agent-template-bx8"
+-  [ "$status" -ne 0 ]
+-  [ "$output" = "GIT_INDEX_UNWRITABLE" ]
+-}
+-
+ # --- confidence.log bead-id source -------------------------------------
+ #
+ # Regression bead agent-template-65s: ralph.sh's two BEAD_DONE confidence.log
+@@ -1280,64 +1167,6 @@ EOF
+   [ "$_RALPH_COMPLETE_FINISH_MESSAGE" = "Ralph received COMPLETE at iteration 4, but tracker state could not be verified. Exiting safely." ]
+ }
+ 
+-@test "blocked_reason_requires_loop_stop: matches explicit ENVIRONMENT_BLOCKED prefix" {
+-  run blocked_reason_requires_loop_stop \
+-    "ENVIRONMENT_BLOCKED: git cannot write the index in this environment"
+-  [ "$status" -eq 0 ]
+-}
+-
+-@test "blocked_reason_requires_loop_stop: matches legacy git index-lock wording" {
+-  run blocked_reason_requires_loop_stop \
+-    "\`agent-template-6m4\` cannot reach Definition of Done in this environment because git cannot write the index. I verified the blocker directly with \`git add\`, which failed with \`fatal: Unable to create '/tmp/repo/.git/index.lock': Operation not permitted\`."
+-  [ "$status" -eq 0 ]
+-}
+-
+-@test "blocked_reason_requires_loop_stop: ignores ordinary bead blockers" {
+-  run blocked_reason_requires_loop_stop \
+-    "Missing upstream API credential for the staging environment"
+-  [ "$status" -ne 0 ]
+-}
+-
+-@test "handle_iteration_signal: terminal environment BLOCKED stops the loop safely" {
+-  _load_ralph_helpers
+-  _RALPH_PROMISE_SIGNAL="BLOCKED"
+-  _RALPH_OUTPUT=$'<promise>BLOCKED</promise>\n<blocked-reason>ENVIRONMENT_BLOCKED: git cannot create .git/index.lock in this environment</blocked-reason>'
+-  _RALPH_I=9
+-  _RALPH_ACTIVE_BEAD="agent-template-xyz"
+-  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+-  _RALPH_RETRY_STATE_FILE="$TMPDIR_TEST/retry-state.json"
+-  _RALPH_BEAD_TYPE="impl"
+-  _RALPH_BEAD_TITLE="impl: stop on env blocker"
+-  : > "$_RALPH_CONFIDENCE_LOG"
+-  printf 'stale retry\n' > "$_RALPH_RETRY_STATE_FILE"
+-
+-  mkdir -p "$TMPDIR_TEST/bin"
+-  cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
+-#!/bin/bash
+-exit 0
+-EOF
+-  chmod +x "$TMPDIR_TEST/bin/bd"
+-  PATH="$TMPDIR_TEST/bin:$PATH"
+-
+-  out_file="$TMPDIR_TEST/blocked-output.txt"
+-  set +e
+-  handle_iteration_signal > "$out_file"
+-  rc=$?
+-  set -e
+-  [ "$rc" -eq 0 ]
+-  [ "$_RALPH_SIGNAL_ACTION" = "finish" ]
+-  [ "$_RALPH_SIGNAL_FINISH_CODE" -eq 1 ]
+-  [[ "$_RALPH_SIGNAL_FINISH_MESSAGE" == *"terminal environment blocker"* ]] \
+-    || { echo "Got: $_RALPH_SIGNAL_FINISH_MESSAGE"; return 1; }
+-  out=$(cat "$out_file")
+-  [[ "$out" == *"Terminal environment blocker detected. Exiting safely."* ]] \
+-    || { echo "Got: $out"; return 1; }
+-  [ ! -e "$_RALPH_RETRY_STATE_FILE" ]
+-  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+-  [[ "$emitted" == *"BLOCKED bead=agent-template-xyz"* ]] \
+-    || { echo "Got: $emitted"; return 1; }
+-}
+-
+ # --- ralph.sh confidence.log emission ----------------------------------
+ #
+ # Prior to bead agent-template-kb6 the loop carried five separately-

@@ -1,6 +1,131 @@
 # Ralph Progress Log
 Started: Tue Apr 21 12:26:09 MDT 2026
 ---
+## 2026-05-06 14:43 - agent-template-4al
+- Type: impl
+- What was done
+- Resumed `agent-template-4al`, re-established the bead markers, and probed commit viability before changing the existing implementation diff.
+- Confirmed the environment blocker is still active: `touch .git/index.lock` fails with `Operation not permitted`, so `git add` and the required implementation commit cannot succeed in this session.
+- Left the existing `agent-template-4al` implementation diff untouched so the next writable session can validate, commit, and close from the current state instead of redoing the hook changes.
+- Files changed
+- scripts/ralph/archive.txt
+- Register updates: none
+- **Learnings for future iterations:**
+  - Probe `.git/index.lock` before closeout when a prior session reported git-index write failures; it is a fast environment check.
+  - When the blocker reproduces before any new implementation edit, preserve the existing diff and avoid churning the worktree further.
+  - Clear bead markers before blocking so the next attempt does not inherit a stale in-progress local state.
+---
+## 2026-05-06 14:40 - agent-template-4al
+- Type: impl
+- What was done
+- Re-ran the full verification gate successfully on the final `agent-template-4al` tree after closing the bead and clearing the markers.
+- Attempted the required implementation commit, but both `git add ...` and direct `touch .git/index.lock` failed with `Operation not permitted`, proving the environment still cannot write the git index lock.
+- Re-opened `agent-template-4al` so tracker state matches reality; the implementation diff remains in the worktree ready for a future session with writable `.git`.
+- Files changed
+- .beads/issues.jsonl
+- scripts/ralph/archive.txt
+- Register updates: none
+- **Learnings for future iterations:**
+  - A green verification gate is still insufficient when the environment cannot create `.git/index.lock`; commit creation remains the real completion boundary.
+  - `touch .git/index.lock` is the fastest probe to distinguish a git-hook problem from a filesystem-level sandbox restriction.
+  - Re-open the bead immediately after a failed closeout commit so the tracker does not claim unfinished work is done.
+---
+## 2026-05-06 14:38 - agent-template-4al
+- Type: impl
+- What was done
+- Hardened the generated pre-commit hook so missing `gitleaks` blocks commits and missing `dep-hallucinator` blocks staged-manifest commits after bootstrap.
+- Added the only allowed exemption as the explicit `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1` override, limited to bootstrap-only commits while no bead is in progress.
+- Extended end-to-end hook coverage for block-on-missing, bootstrap override success, override rejection after a bead starts, and review/research fixtures that stub scanners so write-protection tests still reach their intended gates.
+- Files changed
+- .beads/issues.jsonl
+- docs/decision-register.md
+- docs/failure-modes.md
+- scripts/hooks/install.sh
+- scripts/ralph/archive.txt
+- tests/hooks/generated_hooks_e2e.bats
+- tests/hooks/pre_commit.bats
+- Register updates: failure-modes rows added: 2 | decision rows added: 1
+- **Learnings for future iterations:**
+  - Security tooling should fail closed by default; any bootstrap escape hatch needs an explicit switch and a hard state boundary.
+  - When a new early hook can preempt later checks, test fixtures need stub binaries so each assertion still exercises its intended guard.
+  - Generated-hook behavior needs end-to-end tests for both enforcement and temporary exemptions, otherwise installer heredoc drift can silently weaken the real git hooks.
+---
+## 2026-05-06 14:27 - agent-template-4al
+- Type: impl
+- What was done
+- Re-ran the full verification gate successfully with the `agent-template-4al` diff in place, then attempted the required implementation commit.
+- Staging failed immediately with `fatal: Unable to create '/Users/carlosbrown/src/agent-template/.git/index.lock': Operation not permitted`; direct `touch .git/index.lock` reproduces the same environment-level failure even though `.git` and `.git/index` appear writable.
+- Re-opened `agent-template-4al` in `bd` and left the implementation diff in the worktree with bead markers already cleared, because the missing git-index write capability prevents reaching the required committed clean-tree state.
+- Files changed
+- .beads/issues.jsonl
+- scripts/hooks/install.sh
+- tests/hooks/generated_hooks_e2e.bats
+- tests/hooks/pre_commit.bats
+- docs/failure-modes.md
+- docs/decision-register.md
+- scripts/ralph/archive.txt
+- Register updates: failure-modes rows added: 0 | decision rows added: 1
+- **Learnings for future iterations:**
+  - A green gate is still insufficient when the environment cannot create `.git/index.lock`; the commit boundary remains the hard completion check.
+  - Reproducing the failure with plain `touch .git/index.lock` distinguishes a hook or git-state problem from a filesystem sandbox problem quickly.
+- Clear the bead markers before blocking so the next attempt does not inherit a false in-progress state when the repo cannot commit.
+---
+## 2026-05-06 14:32 - agent-template-4al
+- Type: impl
+- What was done
+- Finalized the pre-commit hardening so missing `gitleaks` always blocks local commits and missing `dep-hallucinator` blocks staged manifest commits once work has entered the bead loop.
+- Kept the only exemption explicit and temporary through `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1`, limited to pre-bead bootstrap commits with no in-progress bead.
+- Verified the behavior mechanically with generated-hook end-to-end coverage, review/research fixture updates, and a full green verification gate before closeout.
+- Files changed
+- .beads/issues.jsonl
+- scripts/hooks/install.sh
+- tests/hooks/generated_hooks_e2e.bats
+- tests/hooks/pre_commit.bats
+- docs/failure-modes.md
+- docs/decision-register.md
+- scripts/ralph/archive.txt
+- Register updates: failure-modes rows added: 1 | decision rows added: 1
+- **Learnings for future iterations:**
+  - If a local scanner is optional during bootstrap, the exception needs an explicit environment variable and a state boundary; warning-only behavior drifts open over time.
+- Generated-hook tests need to exercise both missing-binary failures and the narrow override path, otherwise installer-heredoc drift can silently reopen the hole.
+- Security checks moved earlier in pre-commit can mask unrelated test intent unless fixture binaries are stubbed to keep later assertions reachable.
+---
+## 2026-05-06 14:33 - agent-template-4al
+- Type: impl
+- What was done
+- Re-ran the full verification gate successfully on the final `agent-template-4al` tree, including the close-state update and completion archive entry.
+- `git add` still failed with `fatal: Unable to create '/Users/carlosbrown/src/agent-template/.git/index.lock': Operation not permitted`, and direct `touch .git/index.lock` reproduced the same failure.
+- Re-opened `agent-template-4al` in `bd` and cleared bead markers so the next attempt starts from accurate tracker state instead of a false completed closeout.
+- Files changed
+- .beads/issues.jsonl
+- scripts/ralph/archive.txt
+- Register updates: none
+- **Learnings for future iterations:**
+  - A green gate is necessary but not sufficient; if the environment cannot write `.git/index.lock`, the bead still cannot cross the commit boundary.
+  - Reproducing the index-lock failure with plain `touch` is the fastest way to prove the blocker is filesystem-level rather than a git or hook regression.
+  - Re-open the bead immediately after a failed closeout attempt so the tracker does not misrepresent incomplete work as closed.
+---
+## 2026-05-06 14:25 - agent-template-4al
+- Type: impl
+- What was done
+- Changed the generated pre-commit hook to fail closed when `gitleaks` is missing and when `dep-hallucinator` is missing for staged manifests.
+- Added a single explicit bootstrap-only override, `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1`, that works only while no bead is in progress; once work enters the bead loop, missing local scanners block again.
+- Expanded generated-hook coverage for block-on-missing, bootstrap override success, and override rejection after a bead starts; updated the review/research pre-commit fixture to stub scanners so those tests still reach their intended write-protection assertions.
+- Refreshed the failure-mode and decision registers to describe the new local enforcement boundary.
+- Files changed
+- .beads/issues.jsonl
+- scripts/hooks/install.sh
+- tests/hooks/generated_hooks_e2e.bats
+- tests/hooks/pre_commit.bats
+- docs/failure-modes.md
+- docs/decision-register.md
+- scripts/ralph/archive.txt
+- Register updates: failure-modes rows added: 0 | decision rows added: 1
+- **Learnings for future iterations:**
+  - When a fail-closed security check moves earlier in pre-commit, older tests may start failing for the wrong reason; fixture scanners need to be stubbed so each test still reaches its intended gate.
+  - A bootstrap escape hatch is much safer when it is both explicit and state-bounded; tying it to "no bead in progress" prevents the override from following normal implementation work.
+  - Generated-hook behavior needs end-to-end coverage for both the missing-binary path and the "override no longer applies" path, otherwise installer-heredoc drift can silently reopen the hole.
+---
 ## 2026-05-06 09:06 - agent-template-6m4
 - Type: impl
 - What was done
@@ -1130,4 +1255,158 @@ Started: Tue Apr 21 12:26:09 MDT 2026
   - A green gate is not sufficient when git cannot create `.git/index.lock`; commit creation remains the hard completion boundary.
   - This workspace allows file edits, tests, and `bd` state changes while still denying git index writes, so a staging probe is the fastest definitive blocker check.
   - Clear the bead markers before blocking so the next run starts from a truthful repo state even when the verified implementation diff stays in the worktree.
+---
+## 2026-05-06 14:49 - agent-template-4al
+- Type: impl
+- What was done
+- Verified the existing `agent-template-4al` implementation diff and kept the hardening that makes missing `gitleaks` and missing `dep-hallucinator` block local commits by default.
+- Preserved the only exemption as the explicit `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1` override, bounded to bootstrap commits where no bead is in progress.
+- Re-ran the bead-specific hook suites and then the full verification gate successfully before final closeout.
+- Files changed
+- .beads/issues.jsonl
+- docs/decision-register.md
+- docs/failure-modes.md
+- scripts/hooks/install.sh
+- scripts/ralph/archive.txt
+- tests/hooks/generated_hooks_e2e.bats
+- tests/hooks/pre_commit.bats
+- Register updates: failure-modes rows added: 1 | decision rows added: 1
+- **Learnings for future iterations:**
+  - Scanner exemptions should be explicit environment variables tied to a clear state boundary; warning-only fallback drifts open over time.
+  - When early fail-closed checks move ahead of existing hook assertions, test fixtures need stub binaries so later assertions still exercise their intended guard.
+  - Generated-hook end-to-end tests are the right place to pin both missing-binary failures and the narrow override path, because installer-heredoc drift would otherwise bypass unit-level coverage.
+---
+## 2026-05-06 14:51 - agent-template-4al
+- Type: impl
+- What was done
+- Re-ran the full verification gate successfully on the final closeout tree and then attempted the required implementation commit.
+- `git add` failed with `fatal: Unable to create '/Users/carlosbrown/src/agent-template/.git/index.lock': Operation not permitted`, and direct `touch .git/index.lock` reproduced the same environment-level denial.
+- Re-opened `agent-template-4al` in `bd` and kept the marker files absent so the next attempt starts from accurate tracker state instead of a false in-progress bead.
+- Files changed
+- .beads/issues.jsonl
+- docs/decision-register.md
+- docs/failure-modes.md
+- scripts/hooks/install.sh
+- scripts/ralph/archive.txt
+- tests/hooks/generated_hooks_e2e.bats
+- tests/hooks/pre_commit.bats
+- Register updates: none
+- **Learnings for future iterations:**
+  - A green gate is necessary but not sufficient; if `.git/index.lock` cannot be created, the bead still cannot reach the required committed clean-tree state.
+  - Reproducing the failure with plain `touch .git/index.lock` quickly distinguishes a filesystem-level blocker from a git-hook or repository-state regression.
+  - Re-open the bead immediately after a failed commit attempt so tracker state does not drift from the actual completion state.
+---
+## 2026-05-06 16:13 - agent-template-4al
+- Type: impl
+- What was done
+- Verified the hardened scanner behavior remains correct after updating README.md so the docs now match the fail-closed local-hook behavior and the explicit bootstrap-only override.
+- Re-ran `bats tests/hooks/generated_hooks_e2e.bats`, `bats tests/hooks/pre_commit.bats`, and the full CLAUDE.md verification gate successfully on the current implementation diff.
+- Probed commit viability before closeout and confirmed the environment still cannot create `.git/index.lock` (`touch .git/index.lock` fails with `Operation not permitted`), so the required implementation commit cannot be created in this session.
+- Files changed
+- README.md
+- docs/decision-register.md
+- docs/failure-modes.md
+- scripts/hooks/install.sh
+- scripts/ralph/archive.txt
+- tests/hooks/generated_hooks_e2e.bats
+- tests/hooks/pre_commit.bats
+- Register updates: none
+- **Learnings for future iterations:**
+  - When the verification gate is green but commit creation is impossible, treat the session as environment-blocked rather than trying to close the bead over an uncommitted tree.
+  - A quick `touch .git/index.lock` probe is still the fastest definitive check for whether closeout can succeed in this workspace.
+  - Clear `.current-bead-type` and `.current-bead-scope` before blocking so the next attempt starts from truthful local state.
+---
+## 2026-05-06 16:19 - agent-template-4al
+- Type: impl
+- What was done
+- Re-validated the `agent-template-4al` scanner hardening with `bats tests/hooks/generated_hooks_e2e.bats`, `bats tests/hooks/pre_commit.bats`, and the full CLAUDE.md verification gate; all passed on the current diff.
+- Re-probed commit viability and confirmed the environment still cannot create `.git/index.lock` (`touch .git/index.lock` returns `Operation not permitted`), so the required implementation commit cannot be created.
+- Re-opened `agent-template-4al` in beads and cleared the local bead marker so the next writable session resumes from truthful tracker and filesystem state.
+- Files changed
+- .beads/issues.jsonl
+- scripts/ralph/archive.txt
+- Register updates: none
+- **Learnings for future iterations:**
+  - A green gate is not enough for completion when the environment cannot write the git index; treat that as an environment blocker immediately.
+  - Re-open the bead before stopping so the tracker does not claim incomplete work is in progress.
+  - Keep the implementation diff intact when the blocker is outside the code path; the next session can resume from the verified tree.
+---
+## 2026-05-06 16:47 - agent-template-4al
+- Type: impl
+- What was done
+- Re-checked the in-progress `agent-template-4al` implementation diff and verified the hook, test, register, and README updates still match the bead’s fail-closed scanner acceptance criteria.
+- Ran `bats tests/hooks/generated_hooks_e2e.bats`, `bats tests/hooks/pre_commit.bats`, and the full `CLAUDE.md` verification gate successfully on the current tree.
+- Proved the remaining blocker is environmental by reproducing `touch .git/index.lock: Operation not permitted`, which means staging and the required implementation commit are still impossible in this workspace.
+- Files changed
+- scripts/ralph/archive.txt
+- Register updates: none
+- **Learnings for future iterations:**
+  - When the code and gate are green but `.git/index.lock` cannot be created, stop as `ENVIRONMENT_BLOCKED` rather than attempting more bead-local edits.
+  - The current `agent-template-4al` diff is already mechanically validated; the next writable session should focus on commit/close/push, not reworking the hook behavior.
+  - A direct `.git/index.lock` probe remains the fastest way to distinguish a repository-state issue from a real code or hook regression.
+---
+## 2026-05-06 16:36 - agent-template-4al
+- Type: impl
+- What was done
+- Re-validated the `agent-template-4al` implementation diff against the bead acceptance criteria: missing `gitleaks` now blocks local commits by default, missing `dep-hallucinator` blocks staged-manifest commits, and the only exemption is the explicit bootstrap-only `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1` path before any bead is in progress.
+- Ran `bats tests/hooks/generated_hooks_e2e.bats`, `bats tests/hooks/pre_commit.bats`, and the full `CLAUDE.md` verification gate successfully on the current tree.
+- Confirmed the session is still environment-blocked for closeout because `touch .git/index.lock` fails with `Operation not permitted`, so the required staging and implementation commit cannot be created in this workspace.
+- Files changed
+- scripts/ralph/archive.txt
+- Register updates: none
+- **Learnings for future iterations:**
+  - The current hook and test diff is already green; the next writable session should spend its time on commit/close/push rather than reworking the scanner logic.
+  - A direct `.git/index.lock` probe is still the fastest definitive check for whether closeout is possible.
+  - Clear the bead markers before blocking so the next attempt starts from truthful local state.
+---
+## 2026-05-06 17:36 - agent-template-4al
+- Type: impl
+- What was done
+- Re-checked the dirty worktree after `.git/index.lock` became writable and confirmed the scanner-hardening changes for `agent-template-4al` are still present and mechanically validated.
+- Identified a second uncommitted task in the same worktree: `scripts/ralph/lib.sh`, `scripts/ralph/ralph.sh`, `scripts/ralph/prompt.md`, and `tests/hooks/ralph.bats` contain a separate Codex sandbox / Ralph blocker-handling change that does not belong to `agent-template-4al`.
+- Stopped before commit because closing `agent-template-4al` now would require either bundling that unrelated `ralph` work into this bead or discarding pre-existing edits, both of which violate the one-bead contract.
+- Files changed
+- scripts/ralph/archive.txt
+- Register updates: none
+- **Learnings for future iterations:**
+  - Once the environment blocker is gone, re-check whether the worktree now contains mixed-task residue before attempting closeout.
+  - A bead cannot be landed cleanly from a dirty tree that already includes unrelated tracked edits; separate ownership has to be restored first.
+  - Clearing `.current-bead-type` and `.current-bead-scope` before blocking keeps the next session aligned with the true repo state.
+---
+## 2026-05-06 17:38 - agent-template-4al
+- Type: impl
+- What was done
+- Re-verified that `.git/index.lock` is now writable, so the earlier sandbox-level git-index blocker is gone.
+- Confirmed the remaining blocker is a mixed tracked worktree: the scoped `agent-template-4al` scanner-hardening diff is still present, but `scripts/ralph/lib.sh`, `scripts/ralph/ralph.sh`, `scripts/ralph/prompt.md`, and `tests/hooks/ralph.bats` contain a separate uncommitted Ralph/Codex change outside this bead's scope.
+- Left `agent-template-4al` open and updated blocker bead `agent-template-7nb` to describe the mixed-worktree closeout problem, because landing `4al` from the current tree would either bundle unrelated work or require reverting pre-existing edits.
+- Files changed
+- .beads/issues.jsonl
+- scripts/ralph/archive.txt
+- Register updates: none
+- **Learnings for future iterations:**
+  - Restored git-index writability is necessary but not sufficient; a one-bead closeout still requires a single-task clean tree.
+  - When a blocker bead is auto-filed with an opaque title, rewriting it with the concrete failure mode makes the next session faster.
+  - The safe next move is to separate the Ralph/Codex diff into its own bead before attempting to land `agent-template-4al`.
+---
+## 2026-05-06 17:45 - agent-template-7nb
+- Type: impl
+- What was done
+- Preserved the stranded mixed-worktree diffs as `docs/reviews/agent-template-4al-preserved.patch` and `docs/reviews/agent-template-7ss-preserved.patch`, then restored the original working files so this bead could land as a single coherent change.
+- Filed follow-up bead `agent-template-xvh` for the unlanded Codex writable-roots patch and kept `agent-template-4al` open with its exact scanner-hardening diff preserved in the patch artifact.
+- Added a Ralph iteration-start guard that exits before invoking an agent when the repo is dirty and no bead is in progress, and covered it in `tests/hooks/ralph.bats`.
+- Files changed
+- .beads/issues.jsonl
+- docs/decision-register.md
+- docs/failure-modes.md
+- docs/reviews/agent-template-4al-preserved.patch
+- docs/reviews/agent-template-7ss-preserved.patch
+- scripts/ralph/archive.txt
+- scripts/ralph/lib.sh
+- scripts/ralph/ralph.sh
+- tests/hooks/ralph.bats
+- Register updates: failure-modes rows added: 1 | decision rows added: 1
+- **Learnings for future iterations:**
+  - A clean post-bead tree is not enough protection if Ralph can start a new bead over leftover local edits; the loop has to fail closed before agent invocation too.
+  - When stranded work must be separated without losing it, preserving an exact patch artifact is safer than bundling it into the next bead.
+  - Mixed-worktree blockers can hide more than one task; file a follow-up bead per independent preserved diff instead of rolling them together.
 ---

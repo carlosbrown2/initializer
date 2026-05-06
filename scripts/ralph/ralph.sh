@@ -354,6 +354,15 @@ for _RALPH_I in $(seq 1 "$_RALPH_MAX_ITERATIONS"); do
   # closing. One pre-run capture fixes both cases.
   _RALPH_ACTIVE_BEAD=$(_ralph_bead_in_progress)
 
+  if [[ -z "$_RALPH_ACTIVE_BEAD" ]] && ! git_worktree_clean "$_RALPH_PROJECT_ROOT"; then
+    echo "Error: worktree is dirty but no bead is in progress."
+    echo "  Ralph will not start a new bead over mixed local changes."
+    echo "  Commit, restore, or preserve the existing diff before continuing."
+    git_worktree_status "$_RALPH_PROJECT_ROOT"
+    _ralph_cleanup
+    return 1
+  fi
+
   # If we're tracking a failed bead and a different bead is now in progress, reset
   if [[ -n "$_RALPH_LAST_FAILED_BEAD" && -n "$_RALPH_ACTIVE_BEAD" && "$_RALPH_ACTIVE_BEAD" != "$_RALPH_LAST_FAILED_BEAD" ]]; then
     _RALPH_FAIL_COUNT=0

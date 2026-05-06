@@ -165,6 +165,81 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+@test "git_worktree_status: prints porcelain output for dirty files" {
+  mkdir -p "$TMPDIR_TEST/repo"
+  git -C "$TMPDIR_TEST/repo" init -q
+  printf 'seed\n' > "$TMPDIR_TEST/repo/tracked.txt"
+  git -C "$TMPDIR_TEST/repo" add tracked.txt
+  git -C "$TMPDIR_TEST/repo" -c user.email=test@example.com -c user.name='Test User' commit -q -m "init"
+  printf 'changed\n' >> "$TMPDIR_TEST/repo/tracked.txt"
+
+  run git_worktree_status "$TMPDIR_TEST/repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *" M tracked.txt"* ]]
+}
+
+@test "ralph.sh stops before starting a new bead when no bead is in progress and the worktree is dirty" {
+  TEST_REPO="$TMPDIR_TEST/repo"
+  BIN_DIR="$TMPDIR_TEST/bin"
+  mkdir -p "$TEST_REPO/scripts/ralph" "$TEST_REPO/scripts/hooks" "$BIN_DIR"
+
+  cp "$PROJECT_ROOT/scripts/ralph/ralph.sh" "$TEST_REPO/scripts/ralph/ralph.sh"
+  cp "$PROJECT_ROOT/scripts/ralph/lib.sh" "$TEST_REPO/scripts/ralph/lib.sh"
+  cp "$PROJECT_ROOT/scripts/ralph/prompt.md" "$TEST_REPO/scripts/ralph/prompt.md"
+  cp "$PROJECT_ROOT/scripts/hooks/parsers.sh" "$TEST_REPO/scripts/hooks/parsers.sh"
+
+  git -C "$TEST_REPO" init -q
+  git -C "$TEST_REPO" config user.email test@example.com
+  git -C "$TEST_REPO" config user.name "Test User"
+
+  cat > "$TEST_REPO/CLAUDE.md" <<'EOF'
+# Scratch Project
+
+## Verification Gate
+
+```
+true
+```
+EOF
+
+  cat > "$BIN_DIR/bd" <<'EOF'
+#!/bin/bash
+if [ "$1" = "list" ] && [ "$2" = "--status=in_progress" ] && [ "$3" = "--json" ]; then
+  printf '[]\n'
+  exit 0
+fi
+if [ "$1" = "ready" ] && [ "$2" = "--json" ]; then
+  printf '[{"id":"agent-template-next"}]\n'
+  exit 0
+fi
+if [ "$1" = "show" ] && [ "$3" = "--json" ]; then
+  printf '{"id":"agent-template-next","title":"impl: next bead","description":"do work"}\n'
+  exit 0
+fi
+echo "unexpected bd invocation: $*" >&2
+exit 1
+EOF
+  chmod +x "$BIN_DIR/bd"
+
+  cat > "$BIN_DIR/codex" <<'EOF'
+#!/bin/bash
+echo "codex should not run" >&2
+exit 99
+EOF
+  chmod +x "$BIN_DIR/codex"
+
+  git -C "$TEST_REPO" add CLAUDE.md scripts/ralph/ralph.sh scripts/ralph/lib.sh scripts/ralph/prompt.md scripts/hooks/parsers.sh
+  git -C "$TEST_REPO" commit -q -m "init"
+
+  printf 'dirty\n' > "$TEST_REPO/local-only.txt"
+
+  run bash -c 'PATH="$1:$PATH" source "$2" 1' bash "$BIN_DIR" "$TEST_REPO/scripts/ralph/ralph.sh"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Error: worktree is dirty but no bead is in progress."* ]]
+  [[ "$output" == *"local-only.txt"* ]]
+  [[ "$output" != *"codex should not run"* ]]
+}
+
 @test "tracker_has_unfinished_beads: returns 0 when an in-progress bead exists" {
   mkdir -p "$TMPDIR_TEST/bin"
   cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
