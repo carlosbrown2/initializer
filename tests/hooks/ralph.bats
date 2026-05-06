@@ -317,12 +317,31 @@ EOF
   [ "$output" = "high" ]
 }
 
-@test "read_auto_land_policy: smoke — real CLAUDE.md yields a known-good policy" {
-  # The real CLAUDE.md in this repo declares auto-land: all. Pins the
-  # contract that the shipped template is parseable by the extractor.
+@test "read_auto_land_policy: smoke — real CLAUDE.md yields the shipped default" {
+  # The real CLAUDE.md in this repo is the shipped starter template, so
+  # this smoke test pins the downstream default directly rather than just
+  # asserting the extractor returns some recognized value.
   run read_auto_land_policy "$PROJECT_ROOT/CLAUDE.md"
   [ "$status" -eq 0 ]
-  [[ "$output" == "all" || "$output" == "high" || "$output" == "none" ]]
+  [ "$output" = "high" ]
+}
+
+@test "README documents high as the shipped auto-land default" {
+  run grep -F "Options: \`all\`, \`high\` (shipped default), \`none\`." \
+    "$PROJECT_ROOT/README.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "README does not claim the template repo ships auto-land all" {
+  run grep -F "The template's *own* CLAUDE.md uses \`all\`" \
+    "$PROJECT_ROOT/README.md"
+  [ "$status" -ne 0 ]
+}
+
+@test "project kickoff prompt documents high as the shipped default" {
+  run grep -F "\`auto-land: high\` (auto-land HIGH only, shipped default)" \
+    "$PROJECT_ROOT/project-kickoff-prompt.md"
+  [ "$status" -eq 0 ]
 }
 
 # --- should_auto_land ---------------------------------------------------
@@ -1111,6 +1130,64 @@ EOF
   [ "$_RALPH_COMPLETE_FINISH_MESSAGE" = "Ralph received COMPLETE at iteration 4, but tracker state could not be verified. Exiting safely." ]
 }
 
+@test "blocked_reason_requires_loop_stop: matches explicit ENVIRONMENT_BLOCKED prefix" {
+  run blocked_reason_requires_loop_stop \
+    "ENVIRONMENT_BLOCKED: git cannot write the index in this environment"
+  [ "$status" -eq 0 ]
+}
+
+@test "blocked_reason_requires_loop_stop: matches legacy git index-lock wording" {
+  run blocked_reason_requires_loop_stop \
+    "\`agent-template-6m4\` cannot reach Definition of Done in this environment because git cannot write the index. I verified the blocker directly with \`git add\`, which failed with \`fatal: Unable to create '/tmp/repo/.git/index.lock': Operation not permitted\`."
+  [ "$status" -eq 0 ]
+}
+
+@test "blocked_reason_requires_loop_stop: ignores ordinary bead blockers" {
+  run blocked_reason_requires_loop_stop \
+    "Missing upstream API credential for the staging environment"
+  [ "$status" -ne 0 ]
+}
+
+@test "handle_iteration_signal: terminal environment BLOCKED stops the loop safely" {
+  _load_ralph_helpers
+  _RALPH_PROMISE_SIGNAL="BLOCKED"
+  _RALPH_OUTPUT=$'<promise>BLOCKED</promise>\n<blocked-reason>ENVIRONMENT_BLOCKED: git cannot create .git/index.lock in this environment</blocked-reason>'
+  _RALPH_I=9
+  _RALPH_ACTIVE_BEAD="agent-template-xyz"
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  _RALPH_RETRY_STATE_FILE="$TMPDIR_TEST/retry-state.json"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: stop on env blocker"
+  : > "$_RALPH_CONFIDENCE_LOG"
+  printf 'stale retry\n' > "$_RALPH_RETRY_STATE_FILE"
+
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  out_file="$TMPDIR_TEST/blocked-output.txt"
+  set +e
+  handle_iteration_signal > "$out_file"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ]
+  [ "$_RALPH_SIGNAL_ACTION" = "finish" ]
+  [ "$_RALPH_SIGNAL_FINISH_CODE" -eq 1 ]
+  [[ "$_RALPH_SIGNAL_FINISH_MESSAGE" == *"terminal environment blocker"* ]] \
+    || { echo "Got: $_RALPH_SIGNAL_FINISH_MESSAGE"; return 1; }
+  out=$(cat "$out_file")
+  [[ "$out" == *"Terminal environment blocker detected. Exiting safely."* ]] \
+    || { echo "Got: $out"; return 1; }
+  [ ! -e "$_RALPH_RETRY_STATE_FILE" ]
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"BLOCKED bead=agent-template-xyz"* ]] \
+    || { echo "Got: $emitted"; return 1; }
+}
+
 # --- ralph.sh confidence.log emission ----------------------------------
 #
 # Prior to bead agent-template-kb6 the loop carried five separately-
@@ -1296,10 +1373,12 @@ EOF
   # stale type/title/desc/summary from a prior run into the next.
   _load_ralph_helpers
   _RALPH_HAD_NOUNSET=0
+  _RALPH_SIGNAL_ACTION="finish"
   _RALPH_BEAD_TYPE="impl"
   _RALPH_BEAD_DESCRIPTION="X"
   _RALPH_COMPLETED_SUMMARY="Y"
   _ralph_cleanup
+  [ -z "${_RALPH_SIGNAL_ACTION:-}" ]
   [ -z "${_RALPH_BEAD_TYPE:-}" ]
   [ -z "${_RALPH_BEAD_DESCRIPTION:-}" ]
   [ -z "${_RALPH_COMPLETED_SUMMARY:-}" ]

@@ -149,7 +149,7 @@ The Ralph loop's hard rule still holds: **one bead per fresh agent session, then
 
 Beyond that hard rule, the per-iteration prompt should describe outcomes, not steps. The agent decides how to orient, how to search, how to validate. It must produce: a closed bead, a green gate, and updated registers. `ralph.sh` derives the confidence verdict from the gate result on its own.
 
-**Confidence routing**: two tiers — `HIGH`, `LOW`. `compute_confidence` (`scripts/ralph/lib.sh`) maps gate=PASS → HIGH and anything else → LOW. `CLAUDE.md` declares the auto-land policy under `## Confidence Routing`: `auto-land: all` (auto-land any tier), `auto-land: high` (auto-land HIGH only, default), or `auto-land: none` (every bead requires human approval).
+**Confidence routing**: two tiers — `HIGH`, `LOW`. `compute_confidence` (`scripts/ralph/lib.sh`) maps gate=PASS → HIGH and anything else → LOW. `CLAUDE.md` declares the auto-land policy under `## Confidence Routing`: `auto-land: all` (auto-land any tier), `auto-land: high` (auto-land HIGH only, shipped default), or `auto-land: none` (every bead requires human approval).
 
 **Retry rule**: if the verification gate fails twice on the same bead with the same error class, the third attempt must use a fundamentally different strategy or escalate via `BLOCKED`. Encoded in `ralph.sh`, not in prose.
 

@@ -48,9 +48,9 @@ The gate is enforced at **two points**, and both must agree before a push reache
 
 ## Confidence Routing
 
-The template itself ships `auto-land: high` as the safer default for every project bootstrapped from it. This template repo runs `auto-land: all` only because the gate is fully fleshed out and the human (you) is the only principal. Downstream projects should keep `high` until their gate is similarly strong.
+The template itself ships `auto-land: high` as the safer default for every project bootstrapped from it. Fresh downstream projects should keep `high` until their gate is similarly strong enough to justify a more permissive policy.
 
-auto-land: all
+auto-land: high
 
 ## Discovered Patterns
 

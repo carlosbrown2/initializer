@@ -142,7 +142,7 @@ These appear after the first ralph iteration and are **not** shipped with the te
 
 ## Configuration
 
-- **Auto-land policy** — Set in `CLAUDE.md` under `## Confidence Routing`. Options: `all`, `high` (default for new projects), `none`. The shipped starter CLAUDE.md declares `high` so projects bootstrapped from the template pause on `LOW` confidence (any non-PASS gate) until the gate is strong enough to trust. The template's *own* CLAUDE.md uses `all` because the gate is fully fleshed out and the principal is the template author.
+- **Auto-land policy** — Set in `CLAUDE.md` under `## Confidence Routing`. Options: `all`, `high` (shipped default), `none`. The shipped starter CLAUDE.md declares `high` so projects bootstrapped from the template pause on `LOW` confidence (any non-PASS gate) until the gate is strong enough to trust.
 - **CLAUDE.md size limit** — Default 200 lines, enforced by pre-commit hook. Overflow goes to `docs/skills/`.
 - **Max retries** — Default 3, set in `ralph.sh` (`_RALPH_MAX_RETRIES`).
 - **Max iterations** — Default 30, passed as argument to `ralph.sh`.

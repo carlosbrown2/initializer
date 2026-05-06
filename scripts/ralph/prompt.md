@@ -103,7 +103,7 @@ Emit exactly **one** of these. ralph.sh routes on the signal.
 | Signal | When to use | Effect |
 |--------|------------|--------|
 | `<promise>BEAD_DONE</promise>` | Bead completed. Definition of done holds. | Reset retry state, proceed to next iteration. |
-| `<promise>BLOCKED</promise>` followed by `<blocked-reason>...</blocked-reason>` | Architectural concern, missing dependency, contradictory requirements, or 3-fail escalation. | Auto-file a blocker bead, unclaim current bead, proceed. |
+| `<promise>BLOCKED</promise>` followed by `<blocked-reason>...</blocked-reason>` | Architectural concern, missing dependency, contradictory requirements, 3-fail escalation, or an environment blocker that prevents Ralph from reaching Definition of Done in the current environment. Prefix environment-level blockers with `ENVIRONMENT_BLOCKED:` (for example `.git/index.lock` cannot be created). | Auto-file a blocker bead, unclaim current bead, and usually proceed. `ENVIRONMENT_BLOCKED:` reasons are treated as a hard stop instead of continuing iterations. |
 | `<promise>REWORK_REQUIRED</promise>` followed by `<rework-reason>...</rework-reason>` | Prior bead's work is insufficient — current review/pare/compound cannot proceed. | Re-open the prerequisite bead, unclaim current bead, proceed. |
 | `<promise>COMPLETE</promise>` | The tracker has no unfinished beads left (`open` or `in_progress`). | Exit the ralph loop. |
 

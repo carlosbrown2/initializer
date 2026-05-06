@@ -25,6 +25,7 @@ _ralph_cleanup() {
   unset _RALPH_PROMISE_SIGNAL
   unset _RALPH_TRACKER_STATE
   unset _RALPH_COMPLETE_ACTION _RALPH_COMPLETE_FINISH_CODE _RALPH_COMPLETE_FINISH_MESSAGE
+  unset _RALPH_SIGNAL_ACTION _RALPH_SIGNAL_FINISH_CODE _RALPH_SIGNAL_FINISH_MESSAGE
   unset _RALPH_BEAD_TYPE _RALPH_BEAD_DESCRIPTION _RALPH_COMPLETED_SUMMARY
   unset _RALPH_BEAD_DONE _RALPH_BLOCKED_REASON _RALPH_REWORK_REASON
   unset _RALPH_PREREQ_BEAD _RALPH_BLOCKER_TITLE
@@ -410,6 +411,10 @@ RETRY_EOF
 
   # --- Exit signal routing ---
   handle_iteration_signal
+  if [[ "$_RALPH_SIGNAL_ACTION" == "finish" ]]; then
+    finish "$_RALPH_SIGNAL_FINISH_CODE" "$_RALPH_SIGNAL_FINISH_MESSAGE"
+    break
+  fi
 
   # --- Gate result + confidence routing (bash-run, not agent self-report) ---
   # handle_post_bead_done_routing owns the gate re-run, confidence verdict,

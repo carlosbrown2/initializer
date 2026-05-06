@@ -57,6 +57,33 @@ tracker_has_unfinished_beads() {
   return 1
 }
 
+# Return 0 when a BLOCKED reason means the current environment, not the
+# current bead, is the blocker and Ralph should stop rather than continue.
+#
+# Preferred contract: agents prefix these reasons with
+# `ENVIRONMENT_BLOCKED:`. Keep a narrow legacy fallback for the already-seen
+# git-index failures so older prompt text still stops safely.
+blocked_reason_requires_loop_stop() {
+  local reason="${1:-}"
+  local normalized
+
+  normalized=$(printf '%s' "$reason" | tr '[:upper:]' '[:lower:]')
+
+  case "$normalized" in
+    environment_blocked:*)
+      return 0
+      ;;
+    *"cannot reach definition of done in this environment"*)
+      return 0
+      ;;
+    *".git/index.lock"*|*"git cannot write the index"*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 # Return 0 when the repo worktree is clean, non-zero otherwise.
 #
 # Uses `git status --porcelain` so tracked edits, staged changes, and
@@ -374,6 +401,9 @@ handle_complete_promise() {
 # did so the rest of the loop can keep operating as orchestration.
 handle_iteration_signal() {
   _RALPH_BEAD_DONE=false
+  _RALPH_SIGNAL_ACTION="continue"
+  _RALPH_SIGNAL_FINISH_CODE=""
+  _RALPH_SIGNAL_FINISH_MESSAGE=""
 
   if [[ "$_RALPH_PROMISE_SIGNAL" == "BEAD_DONE" ]]; then
     _RALPH_BEAD_DONE=true
@@ -403,6 +433,13 @@ handle_iteration_signal() {
     _RALPH_FAIL_COUNT=0
     _RALPH_LAST_FAILED_BEAD=""
     rm -f "$_RALPH_RETRY_STATE_FILE"
+
+    if blocked_reason_requires_loop_stop "$_RALPH_BLOCKED_REASON"; then
+      _RALPH_SIGNAL_ACTION="finish"
+      _RALPH_SIGNAL_FINISH_CODE=1
+      _RALPH_SIGNAL_FINISH_MESSAGE="Ralph hit a terminal environment blocker at iteration $_RALPH_I for ${_RALPH_ACTIVE_BEAD:-unknown}: $_RALPH_BLOCKED_REASON"
+      echo "  Terminal environment blocker detected. Exiting safely."
+    fi
     return 0
   fi
 
