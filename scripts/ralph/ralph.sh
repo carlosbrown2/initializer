@@ -300,6 +300,13 @@ if [ -z "$_RALPH_GATE_CMD" ]; then
   return 1
 fi
 
+if ! ensure_git_index_writable "$_RALPH_PROJECT_ROOT"; then
+  echo "Error: git index is not writable after repair attempts."
+  echo "  Ralph needs a writable .git/index.lock to make progress."
+  _ralph_cleanup
+  return 1
+fi
+
 # Retry tracking
 _RALPH_FAIL_COUNT=0
 _RALPH_LAST_FAILED_BEAD=""

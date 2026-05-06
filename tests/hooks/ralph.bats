@@ -25,6 +25,7 @@ setup() {
 }
 
 teardown() {
+  /bin/chmod -R u+rwX "$TMPDIR_TEST" 2>/dev/null || true
   rm -rf "$TMPDIR_TEST"
 }
 
@@ -92,6 +93,76 @@ EOF
 
   run tracker_has_unfinished_beads
   [ "$status" -eq 0 ]
+}
+
+# --- ensure_git_index_writable -------------------------------------------
+
+@test "ensure_git_index_writable: repairs a writable repo after a stale lock" {
+  mkdir -p "$TMPDIR_TEST/repo"
+  git -C "$TMPDIR_TEST/repo" init -q
+  touch "$TMPDIR_TEST/repo/seed"
+  git -C "$TMPDIR_TEST/repo" add seed
+
+  lock_path="$TMPDIR_TEST/repo/.git/index.lock"
+  printf 'stale lock\n' > "$lock_path"
+
+  run ensure_git_index_writable "$TMPDIR_TEST/repo"
+  [ "$status" -eq 0 ]
+  [ ! -e "$lock_path" ]
+}
+
+@test "ensure_git_index_writable: repairs stripped write bits before probing again" {
+  mkdir -p "$TMPDIR_TEST/repo"
+  git -C "$TMPDIR_TEST/repo" init -q
+  touch "$TMPDIR_TEST/repo/seed"
+  git -C "$TMPDIR_TEST/repo" add seed
+
+  git_dir="$TMPDIR_TEST/repo/.git"
+  index_path="$git_dir/index"
+  chmod u-w "$git_dir" "$index_path"
+
+  run ensure_git_index_writable "$TMPDIR_TEST/repo"
+  [ "$status" -eq 0 ]
+  [ ! -e "$git_dir/index.lock" ]
+}
+
+@test "ensure_git_index_writable: returns non-zero when permissions stay blocked" {
+  mkdir -p "$TMPDIR_TEST/repo"
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/git" <<EOF
+#!/bin/bash
+if [ "\$1" = "-C" ]; then
+  shift 2
+fi
+if [ "\$1 \$2" = "rev-parse --git-dir" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index.lock" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index.lock"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/git"
+  cat > "$TMPDIR_TEST/bin/chmod" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/chmod"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  mkdir -p "$TMPDIR_TEST/repo/.git"
+  : > "$TMPDIR_TEST/repo/.git/index"
+  /bin/chmod 0555 "$TMPDIR_TEST/repo/.git"
+  /bin/chmod 0444 "$TMPDIR_TEST/repo/.git/index"
+
+  run ensure_git_index_writable "$TMPDIR_TEST/repo"
+  [ "$status" -ne 0 ]
 }
 
 @test "tracker_has_unfinished_beads: returns 0 when an in-progress bead exists" {
@@ -611,20 +682,35 @@ EOF
 
 @test "auto_land_bead: rejects a dirty worktree before landing starts" {
   mkdir -p "$TMPDIR_TEST/bin"
-  cat > "$TMPDIR_TEST/bin/git" <<'EOF'
+  cat > "$TMPDIR_TEST/bin/git" <<EOF
 #!/bin/bash
-if [ "$1" = "-C" ]; then
+if [ "\$1" = "-C" ]; then
   shift 2
 fi
-if [ "$1 $2" = "status --porcelain" ]; then
+if [ "\$1 \$2" = "rev-parse --git-dir" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index.lock" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index.lock"
+  exit 0
+fi
+if [ "\$1 \$2" = "status --porcelain" ]; then
   printf ' M scripts/ralph/ralph.sh\n'
   exit 0
 fi
-echo "unexpected git invocation: $*" >&2
+echo "unexpected git invocation: \$*" >&2
 exit 1
 EOF
   chmod +x "$TMPDIR_TEST/bin/git"
   PATH="$TMPDIR_TEST/bin:$PATH"
+
+  mkdir -p "$TMPDIR_TEST/repo/.git"
+  : > "$TMPDIR_TEST/repo/.git/index"
 
   run auto_land_bead "$TMPDIR_TEST/repo" "agent-template-bx8"
   [ "$status" -ne 0 ]
@@ -643,6 +729,18 @@ if [ "\$1" = "-C" ]; then
   shift 2
 fi
 printf '%s\n' "\$*" >> "$TMPDIR_TEST/git.log"
+if [ "\$1 \$2" = "rev-parse --git-dir" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index.lock" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index.lock"
+  exit 0
+fi
 if [ "\$1 \$2" = "status --porcelain" ]; then
   count=\$(cat "$TMPDIR_TEST/status-count")
   case "\$count" in
@@ -693,6 +791,9 @@ EOF
   chmod +x "$TMPDIR_TEST/bin/bd"
   PATH="$TMPDIR_TEST/bin:$PATH"
 
+  mkdir -p "$TMPDIR_TEST/repo/.git"
+  : > "$TMPDIR_TEST/repo/.git/index"
+
   run auto_land_bead "$TMPDIR_TEST/repo" "agent-template-bx8"
   [ "$status" -eq 0 ]
   [ "$output" = "LANDED" ]
@@ -701,6 +802,55 @@ EOF
   grep -qFx 'add .beads/issues.jsonl' "$TMPDIR_TEST/git.log"
   grep -qFx 'chore: bd sync - close agent-template-bx8' "$TMPDIR_TEST/git.log"
   grep -qFx 'push' "$TMPDIR_TEST/git.log"
+}
+
+@test "auto_land_bead: returns a specific failure when git index remains unwritable" {
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/git" <<EOF
+#!/bin/bash
+if [ "\$1" = "-C" ]; then
+  shift 2
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-dir" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index.lock" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index.lock"
+  exit 0
+fi
+if [ "\$1 \$2" = "status --porcelain" ]; then
+  exit 0
+fi
+if [ "\$1 \$2" = "pull --rebase" ]; then
+  exit 0
+fi
+if [ "\$1" = "add" ] || [ "\$1" = "commit" ] || [ "\$1" = "push" ]; then
+  exit 0
+fi
+echo "unexpected git invocation: \$*" >&2
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/git"
+  cat > "$TMPDIR_TEST/bin/chmod" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/chmod"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  mkdir -p "$TMPDIR_TEST/repo/.git"
+  : > "$TMPDIR_TEST/repo/.git/index"
+  /bin/chmod 0555 "$TMPDIR_TEST/repo/.git"
+  /bin/chmod 0444 "$TMPDIR_TEST/repo/.git/index"
+
+  run auto_land_bead "$TMPDIR_TEST/repo" "agent-template-bx8"
+  [ "$status" -ne 0 ]
+  [ "$output" = "GIT_INDEX_UNWRITABLE" ]
 }
 
 # --- confidence.log bead-id source -------------------------------------

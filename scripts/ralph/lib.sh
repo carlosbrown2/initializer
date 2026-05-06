@@ -57,6 +57,43 @@ tracker_has_unfinished_beads() {
   return 1
 }
 
+# Return 0 when the repo can create `.git/index.lock`, repairing stale or
+# read-only index state first when that is enough to restore progress.
+#
+# This is intentionally more aggressive than a bare permission probe:
+# 1. remove any stale lock file
+# 2. try a create/remove probe
+# 3. if that fails, chmod the git dir and index file writable and retry
+#
+# If the second probe still fails, the environment is genuinely blocking git
+# writes and the caller should treat that as a hard blocker.
+ensure_git_index_writable() {
+  local repo_root="$1"
+  local git_dir index_path lock_path
+
+  git_dir=$(git -C "$repo_root" rev-parse --git-dir 2>/dev/null) || return 1
+  index_path=$(git -C "$repo_root" rev-parse --git-path index 2>/dev/null) || return 1
+  lock_path=$(git -C "$repo_root" rev-parse --git-path index.lock 2>/dev/null) || return 1
+
+  [[ "$git_dir" = /* ]] || git_dir="$repo_root/$git_dir"
+  [[ "$index_path" = /* ]] || index_path="$repo_root/$index_path"
+  [[ "$lock_path" = /* ]] || lock_path="$repo_root/$lock_path"
+
+  rm -f "$lock_path" 2>/dev/null || true
+  if : > "$lock_path" 2>/dev/null; then
+    rm -f "$lock_path" 2>/dev/null || true
+    return 0
+  fi
+
+  chmod u+w "$git_dir" "$index_path" 2>/dev/null || true
+  if : > "$lock_path" 2>/dev/null; then
+    rm -f "$lock_path" 2>/dev/null || true
+    return 0
+  fi
+
+  return 1
+}
+
 # Return 0 when a BLOCKED reason means the current environment, not the
 # current bead, is the blocker and Ralph should stop rather than continue.
 #
@@ -116,6 +153,11 @@ auto_land_bead() {
   local repo_root="$1"
   local bead_id="$2"
   local status_out path line upstream_ref head_ref upstream_head
+
+  if ! ensure_git_index_writable "$repo_root"; then
+    printf 'GIT_INDEX_UNWRITABLE\n'
+    return 1
+  fi
 
   if ! git_worktree_clean "$repo_root"; then
     printf 'DIRTY_WORKTREE_BEFORE_LAND\n'
