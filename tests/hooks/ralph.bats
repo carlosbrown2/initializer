@@ -513,6 +513,42 @@ EOF
   [ "$(cat "$result_file")" = "FAIL" ]
 }
 
+# --- handle_iteration_signal --------------------------------------------
+
+@test "handle_iteration_signal: BEAD_DONE resets retry state and records the completed summary" {
+  _RALPH_PROMISE_SIGNAL="BEAD_DONE"
+  _RALPH_I=2
+  _RALPH_FAIL_COUNT=2
+  _RALPH_LAST_FAILED_BEAD="agent-template-old"
+  _RALPH_RETRY_STATE_FILE="$TMPDIR_TEST/retry.json"
+  _RALPH_PROJECT_ROOT="$TMPDIR_TEST/repo"
+  mkdir -p "$TMPDIR_TEST/bin"
+  printf 'stale\n' > "$_RALPH_RETRY_STATE_FILE"
+  cat > "$TMPDIR_TEST/bin/git" <<'EOF'
+#!/bin/bash
+if [ "$1" = "-C" ]; then
+  shift 2
+fi
+if [ "$1 $2 $3" = "log -1 --pretty=%s" ]; then
+  printf 'feat: [agent-template-0fo] - refactor loop control\n'
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/git"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  out_file="$TMPDIR_TEST/bead-done.txt"
+  handle_iteration_signal > "$out_file"
+  [ "$_RALPH_BEAD_DONE" = true ]
+  [ "$_RALPH_FAIL_COUNT" -eq 0 ]
+  [ -z "$_RALPH_LAST_FAILED_BEAD" ]
+  [ ! -e "$_RALPH_RETRY_STATE_FILE" ]
+  [ "$_RALPH_COMPLETED_SUMMARY" = "feat: [agent-template-0fo] - refactor loop control" ]
+  out=$(cat "$out_file")
+  [[ "$out" == *"Bead completed successfully at iteration 2."* ]] || { echo "Got: $out"; return 1; }
+}
+
 @test "run_gate: writes SKIPPED and returns non-zero on empty gate command" {
   # Empty gate_cmd means the extractor (gate_command_extract) found no
   # fenced block under ## Verification Gate. Fail closed: return non-zero
@@ -670,11 +706,10 @@ EOF
 
 @test "ralph.sh BEAD_DONE log line uses the picked-up bead id when iter started clean" {
   _load_ralph_helpers
-  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  lib="$PROJECT_ROOT/scripts/ralph/lib.sh"
 
-  # Extract the BEAD_DONE _ralph_emit_log call from the auto-land branch.
-  # Identified by its `auto_land=` middle field, unique to this line.
-  log_line=$(awk '/^[[:space:]]*_ralph_emit_log .*auto_land=/ { print; exit }' "$ralph")
+  # The log emit now lives in handle_post_bead_done_routing in lib.sh.
+  log_line=$(awk '/^[[:space:]]*_ralph_emit_log .*auto_land=/ { print; exit }' "$lib")
   [ -n "$log_line" ]
 
   # Reproduce the bug condition: no in-progress bead at iter start, fresh
@@ -706,12 +741,12 @@ EOF
 
 @test "ralph.sh confidence=NONE log line uses the picked-up bead id when iter started clean" {
   _load_ralph_helpers
-  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  lib="$PROJECT_ROOT/scripts/ralph/lib.sh"
 
   # Extract the confidence=NONE branch _ralph_emit_log call (BEAD_DONE seen
   # but no confidence verdict — e.g., a bead_done=false path that still wants
   # to log the iter outcome). Identified by `confidence=NONE`.
-  log_line=$(awk '/^[[:space:]]*_ralph_emit_log .*confidence=NONE/ { print; exit }' "$ralph")
+  log_line=$(awk '/^[[:space:]]*_ralph_emit_log .*confidence=NONE/ { print; exit }' "$lib")
   [ -n "$log_line" ]
 
   _RALPH_I=1
@@ -732,31 +767,14 @@ EOF
   [[ "$emitted" != *"bead=unknown"* ]] || { echo "Got: $emitted"; return 1; }
 }
 
-# --- ralph.sh auto-land failure routing ---------------------------------
+# --- handle_post_bead_done_routing --------------------------------------
 
-@test "ralph.sh auto-land failure finishes the loop and logs the machine-readable reason" {
-  _load_ralph_helpers
-  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
-  block=$(awk '
-    /^[[:space:]]*if \[\[ -n "\$_RALPH_CONFIDENCE" \]\]; then/ { capture=1; depth=1; print; next }
-    capture {
-      if ($0 ~ /^[[:space:]]*if /) depth++
-      print
-      if ($0 ~ /^[[:space:]]*fi$/) {
-        depth--
-        if (depth == 0) exit
-      }
-    }
-  ' "$ralph")
-  [ -n "$block" ]
-
+@test "handle_post_bead_done_routing: auto-land failure records a finish action and machine-readable reason" {
   _RALPH_I=3
   _RALPH_BEAD_ID="agent-template-bx8"
   _RALPH_BEAD_DONE=true
-  _RALPH_CONFIDENCE="HIGH"
   _RALPH_PROJECT_ROOT="$TMPDIR_TEST/repo"
-  _RALPH_POLICY=""
-  _RALPH_AUTO_LAND=""
+  _RALPH_GATE_CMD="true"
   _RALPH_GATE_RESULT="PASS"
   _RALPH_BEAD_TYPE="impl"
   _RALPH_BEAD_TITLE="impl: land things"
@@ -765,17 +783,21 @@ EOF
   : > "$_RALPH_CONFIDENCE_LOG"
   read_auto_land_policy() { echo "all"; }
   should_auto_land() { echo "true"; }
+  compute_confidence() { echo "HIGH"; }
+  run_gate() { printf 'PASS\n' > "$2"; return 0; }
   auto_land_bead() { printf 'DIRTY_WORKTREE_BEFORE_LAND\n'; return 1; }
-  FINISH_CALLED=""
-  finish() { FINISH_CALLED="$1|$2"; }
+  _ralph_emit_log() {
+    local emit_status="$1"
+    local bead="$2"
+    local middle="$3"
+    printf '%s %s\n' "$bead" "$middle" >> "$_RALPH_CONFIDENCE_LOG"
+  }
 
-  set +e
-  for _loop_once in 1; do
-    eval "$block"
-  done
-  set -e
+  handle_post_bead_done_routing
 
-  [ "$FINISH_CALLED" = "1|Ralph auto-land failed at iteration 3 for agent-template-bx8: DIRTY_WORKTREE_BEFORE_LAND" ]
+  [ "$_RALPH_POST_BEAD_ACTION" = "finish" ]
+  [ "$_RALPH_POST_BEAD_FINISH_CODE" -eq 1 ]
+  [ "$_RALPH_POST_BEAD_FINISH_MESSAGE" = "Ralph auto-land failed at iteration 3 for agent-template-bx8: DIRTY_WORKTREE_BEFORE_LAND" ]
   emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
   [[ "$emitted" == *"landing=FAILED landing_reason=DIRTY_WORKTREE_BEFORE_LAND"* ]] \
     || { echo "Got: $emitted"; return 1; }
@@ -1023,87 +1045,70 @@ EOF
   [[ "$out" != *"Description:"* ]] || { echo "spurious Description line: $out"; return 1; }
 }
 
-# --- ralph.sh COMPLETE routing -----------------------------------------
+# --- handle_complete_promise -------------------------------------------
 
-@test "ralph.sh COMPLETE branch exits only when tracker_has_unfinished_beads says none remain" {
-  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
-  block=$(awk '
-    /^[[:space:]]*# Check for completion signal/ { capture=1 }
-    capture && /^[[:space:]]*# Check for rate limit signal/ { exit }
-    capture { print }
-  ' "$ralph")
-  [ -n "$block" ]
-
+@test "handle_complete_promise: finishes successfully when tracker says no work remains" {
   _RALPH_PROMISE_SIGNAL="COMPLETE"
   _RALPH_I=4
   _RALPH_MAX_ITERATIONS=30
-  FINISH_CALLED=""
-  finish() { FINISH_CALLED="$1|$2"; }
-  tracker_has_unfinished_beads() { return 1; }
-
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
+#!/bin/bash
+printf '%s\n' '[]'
+EOF
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
   set +e
-  for _loop_once in 1; do
-    eval "$block"
-  done
+  handle_complete_promise
   set -e
-
-  [ "$FINISH_CALLED" = "0|Ralph completed all tasks at iteration 4 of 30." ]
+  [ "$_RALPH_COMPLETE_ACTION" = "finish" ]
+  [ "$_RALPH_COMPLETE_FINISH_CODE" -eq 0 ]
+  [ "$_RALPH_COMPLETE_FINISH_MESSAGE" = "Ralph completed all tasks at iteration 4 of 30." ]
 }
 
-@test "ralph.sh COMPLETE branch rejects COMPLETE when unfinished beads remain" {
-  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
-  block=$(awk '
-    /^[[:space:]]*# Check for completion signal/ { capture=1 }
-    capture && /^[[:space:]]*# Check for rate limit signal/ { exit }
-    capture { print }
-  ' "$ralph")
-  [ -n "$block" ]
-
+@test "handle_complete_promise: rejects COMPLETE when unfinished beads remain" {
   _RALPH_PROMISE_SIGNAL="COMPLETE"
   _RALPH_I=4
   _RALPH_MAX_ITERATIONS=30
-  FINISH_CALLED=""
-  finish() { FINISH_CALLED="$1|$2"; }
-  tracker_has_unfinished_beads() { return 0; }
-
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
+#!/bin/bash
+if [[ "$1 $2" == "list --status=open" ]]; then
+  printf '%s\n' '[{"id":"agent-template-open"}]'
+else
+  printf '%s\n' '[]'
+fi
+EOF
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
   out_file="$TMPDIR_TEST/complete-warning.txt"
-  : > "$out_file"
   set +e
-  for _loop_once in 1; do
-    eval "$block" > "$out_file"
-  done
+  handle_complete_promise > "$out_file"
   set -e
-  out=$(cat "$out_file")
-
-  [ -z "$FINISH_CALLED" ]
+  [ "$_RALPH_COMPLETE_ACTION" = "continue" ]
   [ -z "$_RALPH_PROMISE_SIGNAL" ]
+  out=$(cat "$out_file")
   [[ "$out" == *"WARNING: Agent emitted COMPLETE, but open or in-progress beads remain. Continuing."* ]] \
     || { echo "Got: $out"; return 1; }
 }
 
-@test "ralph.sh COMPLETE branch exits safely when tracker state cannot be verified" {
-  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
-  block=$(awk '
-    /^[[:space:]]*# Check for completion signal/ { capture=1 }
-    capture && /^[[:space:]]*# Check for rate limit signal/ { exit }
-    capture { print }
-  ' "$ralph")
-  [ -n "$block" ]
-
+@test "handle_complete_promise: exits safely when tracker state cannot be verified" {
   _RALPH_PROMISE_SIGNAL="COMPLETE"
   _RALPH_I=4
   _RALPH_MAX_ITERATIONS=30
-  FINISH_CALLED=""
-  finish() { FINISH_CALLED="$1|$2"; }
-  tracker_has_unfinished_beads() { return 2; }
-
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/bd" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
   set +e
-  for _loop_once in 1; do
-    eval "$block"
-  done
+  handle_complete_promise
   set -e
-
-  [ "$FINISH_CALLED" = "1|Ralph received COMPLETE at iteration 4, but tracker state could not be verified. Exiting safely." ]
+  [ "$_RALPH_COMPLETE_ACTION" = "finish" ]
+  [ "$_RALPH_COMPLETE_FINISH_CODE" -eq 1 ]
+  [ "$_RALPH_COMPLETE_FINISH_MESSAGE" = "Ralph received COMPLETE at iteration 4, but tracker state could not be verified. Exiting safely." ]
 }
 
 # --- ralph.sh confidence.log emission ----------------------------------
@@ -1162,14 +1167,13 @@ EOF
   [[ "$emitted" == *"bead=unknown bead_type=impl"* ]] || { echo "Got: $emitted"; return 1; }
 }
 
-@test "ralph.sh _ralph_emit_log call sites: each branch emits bead_type, title, and completed-where-expected" {
-  # Smoke test: extract each of the five _ralph_emit_log call sites from
-  # the live source, eval under hydrated globals, and assert the emitted
-  # log line carries bead_type, the sanitized title, and (for the two
-  # BEAD_DONE branches) completed. A regression that drops a field in any
-  # one branch — or wires the wrong middle-field set — surfaces here.
+@test "Ralph _ralph_emit_log call sites: each branch emits bead_type, title, and completed-where-expected" {
+  # Smoke test: extract each of the five _ralph_emit_log call sites from the
+  # live source of truth (now split between ralph.sh and lib.sh), eval under
+  # hydrated globals, and assert the emitted log line carries bead_type, the
+  # sanitized title, and (for the two BEAD_DONE branches) completed.
   _load_ralph_helpers
-  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  lib="$PROJECT_ROOT/scripts/ralph/lib.sh"
   _RALPH_I=1
   _RALPH_BEAD_TYPE="impl"
   _RALPH_BEAD_TITLE="impl: do the thing"
@@ -1179,7 +1183,7 @@ EOF
   # | <extra hydrated vars (eval'd before the call)>.
   while IFS='|' read -r pattern expect_completed setup; do
     [ -z "$pattern" ] && continue
-    call=$(awk -v pat="$pattern" '$0 ~ pat { print; exit }' "$ralph")
+    call=$(awk -v pat="$pattern" '$0 ~ pat { print; exit }' "$lib")
     [ -n "$call" ] || { echo "no call site matched: $pattern"; return 1; }
     : > "$_RALPH_CONFIDENCE_LOG"
     eval "$setup"

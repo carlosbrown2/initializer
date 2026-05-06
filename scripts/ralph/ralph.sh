@@ -24,11 +24,13 @@ _ralph_cleanup() {
   unset _RALPH_BEAD_ID _RALPH_BEAD_TITLE _RALPH_OUTPUT
   unset _RALPH_PROMISE_SIGNAL
   unset _RALPH_TRACKER_STATE
+  unset _RALPH_COMPLETE_ACTION _RALPH_COMPLETE_FINISH_CODE _RALPH_COMPLETE_FINISH_MESSAGE
   unset _RALPH_BEAD_TYPE _RALPH_BEAD_DESCRIPTION _RALPH_COMPLETED_SUMMARY
   unset _RALPH_BEAD_DONE _RALPH_BLOCKED_REASON _RALPH_REWORK_REASON
   unset _RALPH_PREREQ_BEAD _RALPH_BLOCKER_TITLE
   unset _RALPH_GATE_RESULT _RALPH_CONFIDENCE _RALPH_POLICY _RALPH_AUTO_LAND
   unset _RALPH_LANDING_STATUS _RALPH_LANDING_REASON
+  unset _RALPH_POST_BEAD_ACTION _RALPH_POST_BEAD_FINISH_CODE _RALPH_POST_BEAD_FINISH_MESSAGE
   unset _RALPH_FAILED_BEAD _RALPH_RETRY_STATE _RALPH_RETRY_REST _RALPH_RETRY_ACTION
   unset -f _ralph_cleanup _ralph_bead_in_progress _ralph_bead_ready _ralph_bead_title
   unset -f _ralph_load_bead_meta _ralph_sanitize_log_field _ralph_work_summary
@@ -263,9 +265,8 @@ _RALPH_ARCHIVE_FILE="$_RALPH_SCRIPT_DIR/archive.txt"
 _RALPH_CONFIDENCE_LOG="$_RALPH_SCRIPT_DIR/confidence.log"
 _RALPH_RETRY_STATE_FILE="$_RALPH_SCRIPT_DIR/retry_state.json"
 
-# Source routing functions (compute_confidence, read_auto_land_policy,
-# should_auto_land, compute_retry_state, extract_prereq_bead_id, run_gate,
-# git_worktree_clean, auto_land_bead)
+# Source routing functions (promise extraction, tracker verification,
+# retry transitions, gate/confidence/landing routing, and auto-land helpers)
 # so tests/hooks/ralph.bats exercises the same definitions the loop uses.
 _RALPH_LIB="$_RALPH_SCRIPT_DIR/lib.sh"
 if [ ! -f "$_RALPH_LIB" ]; then
@@ -395,19 +396,10 @@ RETRY_EOF
   _RALPH_PROMISE_SIGNAL=$(extract_promise_signal <<<"$_RALPH_OUTPUT")
 
   # Check for completion signal (all work done)
-  if [[ "$_RALPH_PROMISE_SIGNAL" == "COMPLETE" ]]; then
-    tracker_has_unfinished_beads
-    _RALPH_TRACKER_STATE=$?
-    if [[ $_RALPH_TRACKER_STATE -eq 1 ]]; then
-      finish 0 "Ralph completed all tasks at iteration $_RALPH_I of $_RALPH_MAX_ITERATIONS."
-      break
-    elif [[ $_RALPH_TRACKER_STATE -eq 0 ]]; then
-      echo "WARNING: Agent emitted COMPLETE, but open or in-progress beads remain. Continuing."
-      _RALPH_PROMISE_SIGNAL=""
-    else
-      finish 1 "Ralph received COMPLETE at iteration $_RALPH_I, but tracker state could not be verified. Exiting safely."
-      break
-    fi
+  handle_complete_promise
+  if [[ "$_RALPH_COMPLETE_ACTION" == "finish" ]]; then
+    finish "$_RALPH_COMPLETE_FINISH_CODE" "$_RALPH_COMPLETE_FINISH_MESSAGE"
+    break
   fi
 
   # Check for rate limit signal
@@ -417,163 +409,16 @@ RETRY_EOF
   fi
 
   # --- Exit signal routing ---
-  _RALPH_BEAD_DONE=false
+  handle_iteration_signal
 
-  if [[ "$_RALPH_PROMISE_SIGNAL" == "BEAD_DONE" ]]; then
-    _RALPH_BEAD_DONE=true
-    _RALPH_FAIL_COUNT=0
-    _RALPH_LAST_FAILED_BEAD=""
-    rm -f "$_RALPH_RETRY_STATE_FILE"
-
-    _RALPH_COMPLETED_SUMMARY=$(git -C "$_RALPH_PROJECT_ROOT" log -1 --pretty=%s 2>/dev/null || echo "")
-    echo "Bead completed successfully at iteration $_RALPH_I."
-
-  elif [[ "$_RALPH_PROMISE_SIGNAL" == "BLOCKED" ]]; then
-    _RALPH_BLOCKED_REASON=$(echo "$_RALPH_OUTPUT" | sed -n 's/.*<blocked-reason>\(.*\)<\/blocked-reason>.*/\1/p' | head -1)
-    _RALPH_BLOCKED_REASON="${_RALPH_BLOCKED_REASON:-No reason provided}"
-
-    echo "BLOCKED at iteration $_RALPH_I: $_RALPH_BLOCKED_REASON"
-
-    if [[ -n "$_RALPH_ACTIVE_BEAD" ]]; then
-      bd update "$_RALPH_ACTIVE_BEAD" --status open 2>/dev/null || true
-      _RALPH_BLOCKER_TITLE="BLOCKED: $_RALPH_ACTIVE_BEAD — $_RALPH_BLOCKED_REASON"
-      bd create --title="$_RALPH_BLOCKER_TITLE" --type=bug --priority=1 2>/dev/null || true
-      echo "  Unclaimed $_RALPH_ACTIVE_BEAD and filed blocker bead."
-    fi
-
-    _ralph_emit_log "BLOCKED" "${_RALPH_ACTIVE_BEAD:-unknown}" "reason=$_RALPH_BLOCKED_REASON"
-    _RALPH_FAIL_COUNT=0
-    _RALPH_LAST_FAILED_BEAD=""
-    rm -f "$_RALPH_RETRY_STATE_FILE"
-
-  elif [[ "$_RALPH_PROMISE_SIGNAL" == "REWORK_REQUIRED" ]]; then
-    _RALPH_REWORK_REASON=$(echo "$_RALPH_OUTPUT" | sed -n 's/.*<rework-reason>\(.*\)<\/rework-reason>.*/\1/p' | head -1)
-    _RALPH_REWORK_REASON="${_RALPH_REWORK_REASON:-No reason provided}"
-
-    echo "REWORK REQUIRED at iteration $_RALPH_I: $_RALPH_REWORK_REASON"
-
-    if [[ -n "$_RALPH_ACTIVE_BEAD" ]]; then
-      bd update "$_RALPH_ACTIVE_BEAD" --status open 2>/dev/null || true
-
-      _RALPH_PREREQ_BEAD=$(bd dep list "$_RALPH_ACTIVE_BEAD" 2>/dev/null | extract_prereq_bead_id "$_RALPH_ACTIVE_BEAD") || true
-      if [[ -n "$_RALPH_PREREQ_BEAD" ]]; then
-        bd update "$_RALPH_PREREQ_BEAD" --status open 2>/dev/null || true
-        echo "  Re-opened prerequisite $_RALPH_PREREQ_BEAD for rework."
-      fi
-      echo "  Unclaimed $_RALPH_ACTIVE_BEAD pending rework."
-    fi
-
-    _ralph_emit_log "REWORK" "${_RALPH_ACTIVE_BEAD:-unknown}" "reason=$_RALPH_REWORK_REASON"
-    _RALPH_FAIL_COUNT=0
-    _RALPH_LAST_FAILED_BEAD=""
-    rm -f "$_RALPH_RETRY_STATE_FILE"
-
-  else
-    echo "WARNING: No exit signal detected at iteration $_RALPH_I. Agent may have stopped unexpectedly."
-
-    _RALPH_FAILED_BEAD="$_RALPH_ACTIVE_BEAD"
-
-    if [[ -n "$_RALPH_FAILED_BEAD" ]]; then
-      _RALPH_RETRY_STATE=$(compute_retry_state "$_RALPH_FAILED_BEAD" "$_RALPH_LAST_FAILED_BEAD" "$_RALPH_FAIL_COUNT" "$_RALPH_MAX_RETRIES")
-      _RALPH_FAIL_COUNT="${_RALPH_RETRY_STATE%%|*}"
-      _RALPH_RETRY_REST="${_RALPH_RETRY_STATE#*|}"
-      _RALPH_LAST_FAILED_BEAD="${_RALPH_RETRY_REST%%|*}"
-      _RALPH_RETRY_ACTION="${_RALPH_RETRY_STATE##*|}"
-
-      echo "Retry tracking: bead=$_RALPH_FAILED_BEAD fail_count=$_RALPH_FAIL_COUNT/$_RALPH_MAX_RETRIES"
-
-      if [[ "$_RALPH_RETRY_ACTION" == "escalate" ]]; then
-        echo "ESCALATION (safety net): Bead $_RALPH_FAILED_BEAD failed $_RALPH_FAIL_COUNT times."
-        echo "  Unclaiming bead and filing blocker..."
-
-        bd update "$_RALPH_FAILED_BEAD" --status open 2>/dev/null || true
-
-        _RALPH_BLOCKER_TITLE="BLOCKED: $_RALPH_FAILED_BEAD failed $_RALPH_FAIL_COUNT times — needs manual investigation"
-        bd create --title="$_RALPH_BLOCKER_TITLE" --type=bug --priority=1 2>/dev/null || true
-
-        _ralph_emit_log "ESCALATION" "$_RALPH_FAILED_BEAD" "fail_count=$_RALPH_FAIL_COUNT"
-
-        _RALPH_FAIL_COUNT=0
-        _RALPH_LAST_FAILED_BEAD=""
-        rm -f "$_RALPH_RETRY_STATE_FILE"
-      fi
-    fi
-  fi
-
-  # --- Gate result (bash-run, not agent self-report) ---
-  # On BEAD_DONE, re-run the gate from bash and bind .last-gate-result to
-  # the real exit code. Replaces the prior design where the agent emitted
-  # `<gate-result>` and we grep-parsed the tag — a self-report the agent
-  # could skip, misquote, or hallucinate. See run_gate in lib.sh for the
-  # rationale and scripts/hooks/install.sh pre-push for the defense-in-
-  # depth re-run on push.
-  #
-  # On non-BEAD_DONE iterations (BLOCKED, REWORK, no-signal), clear the
-  # result file so a subsequent push does not trust a stale PASS from a
-  # prior iteration. The pre-push hook still runs the gate itself; this
-  # just removes a misleading informational artifact.
-  _RALPH_GATE_RESULT="skipped"
-  if [[ "$_RALPH_BEAD_DONE" == "true" ]]; then
-    if run_gate "$_RALPH_GATE_CMD" "$_RALPH_PROJECT_ROOT/.last-gate-result"; then
-      _RALPH_GATE_RESULT="PASS"
-    else
-      _RALPH_GATE_RESULT="FAIL"
-    fi
-  else
-    rm -f "$_RALPH_PROJECT_ROOT/.last-gate-result"
-  fi
-
-  # --- Confidence routing (derived from gate, not agent self-grade) ---
-  # compute_confidence (lib.sh) is now single-axis: gate=PASS → HIGH,
-  # anything else → LOW. Replaces the prior 4-axis stack (diff size,
-  # touched_hooks, touched_claude_md). On non-BEAD_DONE iterations
-  # (BLOCKED, REWORK, no-signal) there is no committed work to grade,
-  # so confidence is left empty and the block below logs `confidence=NONE`
-  # without routing.
-  _RALPH_CONFIDENCE=""
-  _RALPH_LANDING_STATUS="SKIPPED"
-  _RALPH_LANDING_REASON=""
-  if [[ "$_RALPH_BEAD_DONE" == "true" ]]; then
-    _RALPH_CONFIDENCE=$(compute_confidence "$_RALPH_GATE_RESULT")
-  fi
-
-  if [[ -n "$_RALPH_CONFIDENCE" ]]; then
-    _RALPH_POLICY=$(read_auto_land_policy "$_RALPH_PROJECT_ROOT/CLAUDE.md")
-    _RALPH_AUTO_LAND=$(should_auto_land "$_RALPH_CONFIDENCE" "$_RALPH_POLICY")
-
-    if [[ "$_RALPH_AUTO_LAND" == "true" ]]; then
-      if _RALPH_LANDING_REASON=$(auto_land_bead "$_RALPH_PROJECT_ROOT" "${_RALPH_BEAD_ID:-unknown}"); then
-        _RALPH_LANDING_STATUS="LANDED"
-        _RALPH_LANDING_REASON=""
-      else
-        _RALPH_LANDING_STATUS="FAILED"
-      fi
-    fi
-
-    # _RALPH_BEAD_ID, not _RALPH_ACTIVE_BEAD: the latter is empty whenever the
-    # iter started with no in-progress bead and the agent picked up a fresh
-    # bead via _ralph_bead_ready during the iter — so logging it printed
-    # `bead=unknown` for almost every successful BEAD_DONE iter, and
-    # archive_schema_check (which filters bead=unknown out) silently passed.
-    # _RALPH_BEAD_ID is set at the iter top from either the resumed
-    # _RALPH_ACTIVE_BEAD or _ralph_bead_ready, so it always names the bead
-    # the agent will work on. Same fix in the confidence=NONE branch below.
-    _ralph_emit_log "" "${_RALPH_BEAD_ID:-unknown}" "bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT landing=$_RALPH_LANDING_STATUS landing_reason=${_RALPH_LANDING_REASON:-none}" "yes"
-
-    if [[ "$_RALPH_AUTO_LAND" == "true" ]]; then
-      if [[ "$_RALPH_LANDING_STATUS" == "LANDED" ]]; then
-        echo "Auto-land: confidence=$_RALPH_CONFIDENCE, policy=$_RALPH_POLICY, landing=LANDED"
-      else
-        finish 1 "Ralph auto-land failed at iteration $_RALPH_I for ${_RALPH_BEAD_ID:-unknown}: $_RALPH_LANDING_REASON"
-        break
-      fi
-    else
-      echo "Pausing for human review: confidence=$_RALPH_CONFIDENCE, policy=$_RALPH_POLICY"
-      echo "  Press Enter to continue or Ctrl+C to abort..."
-      read -r
-    fi
-  else
-    _ralph_emit_log "" "${_RALPH_BEAD_ID:-unknown}" "bead_done=$_RALPH_BEAD_DONE confidence=NONE (no signal detected) gate_result=$_RALPH_GATE_RESULT" "yes"
+  # --- Gate result + confidence routing (bash-run, not agent self-report) ---
+  # handle_post_bead_done_routing owns the gate re-run, confidence verdict,
+  # landing attempt, and outcome logging. The top-level loop only reacts to
+  # its explicit finish/continue action.
+  handle_post_bead_done_routing
+  if [[ "$_RALPH_POST_BEAD_ACTION" == "finish" ]]; then
+    finish "$_RALPH_POST_BEAD_FINISH_CODE" "$_RALPH_POST_BEAD_FINISH_MESSAGE"
+    break
   fi
 
   # Footer: bead context + commit subject. Gated on _RALPH_COMPLETED_SUMMARY
