@@ -57,6 +57,110 @@ tracker_has_unfinished_beads() {
   return 1
 }
 
+# Return 0 when the repo worktree is clean, non-zero otherwise.
+#
+# Uses `git status --porcelain` so tracked edits, staged changes, and
+# untracked files all count as dirty. Gitignored runtime files such as
+# `.last-gate-result` are already excluded by git itself, so the check
+# stays focused on landable repo state rather than ephemeral loop output.
+git_worktree_clean() {
+  local repo_root="$1"
+  local status_out
+  status_out=$(git -C "$repo_root" status --porcelain 2>/dev/null) || return 1
+  [ -z "$status_out" ]
+}
+
+# Run the post-BEAD_DONE landing ritual.
+#
+# The agent is responsible for the bead's implementation commit before it
+# emits BEAD_DONE. Ralph owns the session-ending landing steps after that:
+#   1. require a clean worktree
+#   2. `git pull --rebase`
+#   3. `bd sync`
+#   4. commit the resulting beads-state update if and only if bd sync dirtied
+#      `.beads/issues.jsonl`
+#   5. `git push`
+#   6. verify upstream parity and a clean post-push worktree
+#
+# On success, prints `LANDED` and returns 0. On failure, prints a stable
+# machine-readable reason token and returns non-zero so ralph.sh can log and
+# stop rather than silently continuing past a stranded bead.
+auto_land_bead() {
+  local repo_root="$1"
+  local bead_id="$2"
+  local status_out path line upstream_ref head_ref upstream_head
+
+  if ! git_worktree_clean "$repo_root"; then
+    printf 'DIRTY_WORKTREE_BEFORE_LAND\n'
+    return 1
+  fi
+
+  if ! git -C "$repo_root" pull --rebase; then
+    printf 'PULL_REBASE_FAILED\n'
+    return 1
+  fi
+
+  if ! bd sync; then
+    printf 'BD_SYNC_FAILED\n'
+    return 1
+  fi
+
+  status_out=$(git -C "$repo_root" status --porcelain 2>/dev/null) || {
+    printf 'STATUS_CHECK_FAILED_AFTER_BD_SYNC\n'
+    return 1
+  }
+
+  if [ -n "$status_out" ]; then
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      path="${line#?? }"
+      if [ "$path" != ".beads/issues.jsonl" ]; then
+        printf 'UNEXPECTED_BD_SYNC_DIFF\n'
+        return 1
+      fi
+    done <<<"$status_out"
+
+    if ! git -C "$repo_root" add .beads/issues.jsonl; then
+      printf 'SYNC_ADD_FAILED\n'
+      return 1
+    fi
+    if ! git -C "$repo_root" commit -m "chore: bd sync - close $bead_id"; then
+      printf 'SYNC_COMMIT_FAILED\n'
+      return 1
+    fi
+  fi
+
+  if ! git -C "$repo_root" push; then
+    printf 'PUSH_FAILED\n'
+    return 1
+  fi
+
+  if ! git_worktree_clean "$repo_root"; then
+    printf 'DIRTY_WORKTREE_AFTER_PUSH\n'
+    return 1
+  fi
+
+  upstream_ref=$(git -C "$repo_root" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || {
+    printf 'NO_UPSTREAM_TRACKING_BRANCH\n'
+    return 1
+  }
+  head_ref=$(git -C "$repo_root" rev-parse HEAD 2>/dev/null) || {
+    printf 'HEAD_RESOLUTION_FAILED\n'
+    return 1
+  }
+  upstream_head=$(git -C "$repo_root" rev-parse "$upstream_ref" 2>/dev/null) || {
+    printf 'UPSTREAM_RESOLUTION_FAILED\n'
+    return 1
+  }
+
+  if [ "$head_ref" != "$upstream_head" ]; then
+    printf 'UPSTREAM_MISMATCH_AFTER_PUSH\n'
+    return 1
+  fi
+
+  printf 'LANDED\n'
+}
+
 # Execute the verification gate command and record the real exit code.
 #
 # Replaces the prior design where the agent ran the gate and self-reported

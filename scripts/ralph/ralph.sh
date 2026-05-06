@@ -28,6 +28,7 @@ _ralph_cleanup() {
   unset _RALPH_BEAD_DONE _RALPH_BLOCKED_REASON _RALPH_REWORK_REASON
   unset _RALPH_PREREQ_BEAD _RALPH_BLOCKER_TITLE
   unset _RALPH_GATE_RESULT _RALPH_CONFIDENCE _RALPH_POLICY _RALPH_AUTO_LAND
+  unset _RALPH_LANDING_STATUS _RALPH_LANDING_REASON
   unset _RALPH_FAILED_BEAD _RALPH_RETRY_STATE _RALPH_RETRY_REST _RALPH_RETRY_ACTION
   unset -f _ralph_cleanup _ralph_bead_in_progress _ralph_bead_ready _ralph_bead_title
   unset -f _ralph_load_bead_meta _ralph_sanitize_log_field _ralph_work_summary
@@ -263,7 +264,8 @@ _RALPH_CONFIDENCE_LOG="$_RALPH_SCRIPT_DIR/confidence.log"
 _RALPH_RETRY_STATE_FILE="$_RALPH_SCRIPT_DIR/retry_state.json"
 
 # Source routing functions (compute_confidence, read_auto_land_policy,
-# should_auto_land, compute_retry_state, extract_prereq_bead_id, run_gate)
+# should_auto_land, compute_retry_state, extract_prereq_bead_id, run_gate,
+# git_worktree_clean, auto_land_bead)
 # so tests/hooks/ralph.bats exercises the same definitions the loop uses.
 _RALPH_LIB="$_RALPH_SCRIPT_DIR/lib.sh"
 if [ ! -f "$_RALPH_LIB" ]; then
@@ -529,6 +531,8 @@ RETRY_EOF
   # so confidence is left empty and the block below logs `confidence=NONE`
   # without routing.
   _RALPH_CONFIDENCE=""
+  _RALPH_LANDING_STATUS="SKIPPED"
+  _RALPH_LANDING_REASON=""
   if [[ "$_RALPH_BEAD_DONE" == "true" ]]; then
     _RALPH_CONFIDENCE=$(compute_confidence "$_RALPH_GATE_RESULT")
   fi
@@ -536,6 +540,15 @@ RETRY_EOF
   if [[ -n "$_RALPH_CONFIDENCE" ]]; then
     _RALPH_POLICY=$(read_auto_land_policy "$_RALPH_PROJECT_ROOT/CLAUDE.md")
     _RALPH_AUTO_LAND=$(should_auto_land "$_RALPH_CONFIDENCE" "$_RALPH_POLICY")
+
+    if [[ "$_RALPH_AUTO_LAND" == "true" ]]; then
+      if _RALPH_LANDING_REASON=$(auto_land_bead "$_RALPH_PROJECT_ROOT" "${_RALPH_BEAD_ID:-unknown}"); then
+        _RALPH_LANDING_STATUS="LANDED"
+        _RALPH_LANDING_REASON=""
+      else
+        _RALPH_LANDING_STATUS="FAILED"
+      fi
+    fi
 
     # _RALPH_BEAD_ID, not _RALPH_ACTIVE_BEAD: the latter is empty whenever the
     # iter started with no in-progress bead and the agent picked up a fresh
@@ -545,10 +558,15 @@ RETRY_EOF
     # _RALPH_BEAD_ID is set at the iter top from either the resumed
     # _RALPH_ACTIVE_BEAD or _ralph_bead_ready, so it always names the bead
     # the agent will work on. Same fix in the confidence=NONE branch below.
-    _ralph_emit_log "" "${_RALPH_BEAD_ID:-unknown}" "bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT" "yes"
+    _ralph_emit_log "" "${_RALPH_BEAD_ID:-unknown}" "bead_done=$_RALPH_BEAD_DONE confidence=$_RALPH_CONFIDENCE policy=$_RALPH_POLICY auto_land=$_RALPH_AUTO_LAND gate_result=$_RALPH_GATE_RESULT landing=$_RALPH_LANDING_STATUS landing_reason=${_RALPH_LANDING_REASON:-none}" "yes"
 
     if [[ "$_RALPH_AUTO_LAND" == "true" ]]; then
-      echo "Auto-land: confidence=$_RALPH_CONFIDENCE, policy=$_RALPH_POLICY"
+      if [[ "$_RALPH_LANDING_STATUS" == "LANDED" ]]; then
+        echo "Auto-land: confidence=$_RALPH_CONFIDENCE, policy=$_RALPH_POLICY, landing=LANDED"
+      else
+        finish 1 "Ralph auto-land failed at iteration $_RALPH_I for ${_RALPH_BEAD_ID:-unknown}: $_RALPH_LANDING_REASON"
+        break
+      fi
     else
       echo "Pausing for human review: confidence=$_RALPH_CONFIDENCE, policy=$_RALPH_POLICY"
       echo "  Press Enter to continue or Ctrl+C to abort..."

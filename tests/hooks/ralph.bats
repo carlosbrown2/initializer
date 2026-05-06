@@ -552,6 +552,102 @@ EOF
   [ "$(cat "$result_file")" = "FAIL" ]
 }
 
+# --- auto_land_bead ------------------------------------------------------
+
+@test "auto_land_bead: rejects a dirty worktree before landing starts" {
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/git" <<'EOF'
+#!/bin/bash
+if [ "$1" = "-C" ]; then
+  shift 2
+fi
+if [ "$1 $2" = "status --porcelain" ]; then
+  printf ' M scripts/ralph/ralph.sh\n'
+  exit 0
+fi
+echo "unexpected git invocation: $*" >&2
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/git"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  run auto_land_bead "$TMPDIR_TEST/repo" "agent-template-bx8"
+  [ "$status" -ne 0 ]
+  [ "$output" = "DIRTY_WORKTREE_BEFORE_LAND" ]
+}
+
+@test "auto_land_bead: lands a clean bead and commits only the bd sync state file" {
+  mkdir -p "$TMPDIR_TEST/bin"
+  printf '0\n' > "$TMPDIR_TEST/status-count"
+  : > "$TMPDIR_TEST/git.log"
+  : > "$TMPDIR_TEST/bd.log"
+
+  cat > "$TMPDIR_TEST/bin/git" <<EOF
+#!/bin/bash
+if [ "\$1" = "-C" ]; then
+  shift 2
+fi
+printf '%s\n' "\$*" >> "$TMPDIR_TEST/git.log"
+if [ "\$1 \$2" = "status --porcelain" ]; then
+  count=\$(cat "$TMPDIR_TEST/status-count")
+  case "\$count" in
+    0) printf '1\n' > "$TMPDIR_TEST/status-count"; exit 0 ;;
+    1) printf '2\n' > "$TMPDIR_TEST/status-count"; printf ' M .beads/issues.jsonl\n'; exit 0 ;;
+    *) exit 0 ;;
+  esac
+fi
+if [ "\$1 \$2" = "pull --rebase" ]; then
+  exit 0
+fi
+if [ "\$1" = "add" ] && [ "\$2" = ".beads/issues.jsonl" ]; then
+  exit 0
+fi
+if [ "\$1" = "commit" ] && [ "\$2" = "-m" ]; then
+  printf '%s\n' "\$3" >> "$TMPDIR_TEST/git.log"
+  exit 0
+fi
+if [ "\$1" = "push" ]; then
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --abbrev-ref --symbolic-full-name" ]; then
+  printf 'origin/main\n'
+  exit 0
+fi
+if [ "\$1 \$2" = "rev-parse HEAD" ]; then
+  printf 'abc123\n'
+  exit 0
+fi
+if [ "\$1 \$2" = "rev-parse origin/main" ]; then
+  printf 'abc123\n'
+  exit 0
+fi
+echo "unexpected git invocation: \$*" >&2
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/git"
+
+  cat > "$TMPDIR_TEST/bin/bd" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$TMPDIR_TEST/bd.log"
+if [ "\$1" = "sync" ]; then
+  exit 0
+fi
+echo "unexpected bd invocation: \$*" >&2
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/bd"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  run auto_land_bead "$TMPDIR_TEST/repo" "agent-template-bx8"
+  [ "$status" -eq 0 ]
+  [ "$output" = "LANDED" ]
+  grep -qFx 'pull --rebase' "$TMPDIR_TEST/git.log"
+  grep -qFx 'sync' "$TMPDIR_TEST/bd.log"
+  grep -qFx 'add .beads/issues.jsonl' "$TMPDIR_TEST/git.log"
+  grep -qFx 'chore: bd sync - close agent-template-bx8' "$TMPDIR_TEST/git.log"
+  grep -qFx 'push' "$TMPDIR_TEST/git.log"
+}
+
 # --- confidence.log bead-id source -------------------------------------
 #
 # Regression bead agent-template-65s: ralph.sh's two BEAD_DONE confidence.log
@@ -594,6 +690,8 @@ EOF
   _RALPH_POLICY="all"
   _RALPH_AUTO_LAND="true"
   _RALPH_GATE_RESULT="PASS"
+  _RALPH_LANDING_STATUS="LANDED"
+  _RALPH_LANDING_REASON=""
   _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
   _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
   : > "$_RALPH_CONFIDENCE_LOG"
@@ -603,6 +701,7 @@ EOF
   emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
   [[ "$emitted" == *"bead=agent-template-xyz"* ]] || { echo "Got: $emitted"; return 1; }
   [[ "$emitted" != *"bead=unknown"* ]] || { echo "Got: $emitted"; return 1; }
+  [[ "$emitted" == *"landing=LANDED landing_reason=none"* ]] || { echo "Got: $emitted"; return 1; }
 }
 
 @test "ralph.sh confidence=NONE log line uses the picked-up bead id when iter started clean" {
@@ -631,6 +730,55 @@ EOF
   emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
   [[ "$emitted" == *"bead=agent-template-xyz"* ]] || { echo "Got: $emitted"; return 1; }
   [[ "$emitted" != *"bead=unknown"* ]] || { echo "Got: $emitted"; return 1; }
+}
+
+# --- ralph.sh auto-land failure routing ---------------------------------
+
+@test "ralph.sh auto-land failure finishes the loop and logs the machine-readable reason" {
+  _load_ralph_helpers
+  ralph="$PROJECT_ROOT/scripts/ralph/ralph.sh"
+  block=$(awk '
+    /^[[:space:]]*if \[\[ -n "\$_RALPH_CONFIDENCE" \]\]; then/ { capture=1; depth=1; print; next }
+    capture {
+      if ($0 ~ /^[[:space:]]*if /) depth++
+      print
+      if ($0 ~ /^[[:space:]]*fi$/) {
+        depth--
+        if (depth == 0) exit
+      }
+    }
+  ' "$ralph")
+  [ -n "$block" ]
+
+  _RALPH_I=3
+  _RALPH_BEAD_ID="agent-template-bx8"
+  _RALPH_BEAD_DONE=true
+  _RALPH_CONFIDENCE="HIGH"
+  _RALPH_PROJECT_ROOT="$TMPDIR_TEST/repo"
+  _RALPH_POLICY=""
+  _RALPH_AUTO_LAND=""
+  _RALPH_GATE_RESULT="PASS"
+  _RALPH_BEAD_TYPE="impl"
+  _RALPH_BEAD_TITLE="impl: land things"
+  _RALPH_COMPLETED_SUMMARY="feat: [agent-template-bx8] - land things"
+  _RALPH_CONFIDENCE_LOG="$TMPDIR_TEST/confidence.log"
+  : > "$_RALPH_CONFIDENCE_LOG"
+  read_auto_land_policy() { echo "all"; }
+  should_auto_land() { echo "true"; }
+  auto_land_bead() { printf 'DIRTY_WORKTREE_BEFORE_LAND\n'; return 1; }
+  FINISH_CALLED=""
+  finish() { FINISH_CALLED="$1|$2"; }
+
+  set +e
+  for _loop_once in 1; do
+    eval "$block"
+  done
+  set -e
+
+  [ "$FINISH_CALLED" = "1|Ralph auto-land failed at iteration 3 for agent-template-bx8: DIRTY_WORKTREE_BEFORE_LAND" ]
+  emitted=$(cat "$_RALPH_CONFIDENCE_LOG")
+  [[ "$emitted" == *"landing=FAILED landing_reason=DIRTY_WORKTREE_BEFORE_LAND"* ]] \
+    || { echo "Got: $emitted"; return 1; }
 }
 
 # --- _ralph_load_bead_meta + _ralph_sanitize_log_field -----------------
@@ -1052,7 +1200,7 @@ EOF
 _ralph_emit_log "BLOCKED"|no|_RALPH_ACTIVE_BEAD="agent-template-xyz"; _RALPH_BLOCKED_REASON="missing dep"
 _ralph_emit_log "REWORK"|no|_RALPH_ACTIVE_BEAD="agent-template-xyz"; _RALPH_REWORK_REASON="prereq incomplete"
 _ralph_emit_log "ESCALATION"|no|_RALPH_FAILED_BEAD="agent-template-xyz"; _RALPH_FAIL_COUNT=3
-_ralph_emit_log .*auto_land=|yes|_RALPH_BEAD_ID="agent-template-xyz"; _RALPH_BEAD_DONE=true; _RALPH_CONFIDENCE="HIGH"; _RALPH_POLICY="all"; _RALPH_AUTO_LAND="true"; _RALPH_GATE_RESULT="PASS"; _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
+_ralph_emit_log .*auto_land=|yes|_RALPH_BEAD_ID="agent-template-xyz"; _RALPH_BEAD_DONE=true; _RALPH_CONFIDENCE="HIGH"; _RALPH_POLICY="all"; _RALPH_AUTO_LAND="true"; _RALPH_GATE_RESULT="PASS"; _RALPH_LANDING_STATUS="LANDED"; _RALPH_LANDING_REASON=""; _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
 _ralph_emit_log .*confidence=NONE|yes|_RALPH_BEAD_ID="agent-template-xyz"; _RALPH_BEAD_DONE=true; _RALPH_GATE_RESULT="PASS"; _RALPH_COMPLETED_SUMMARY="feat: [agent-template-xyz] - did the thing"
 EOF
 }
