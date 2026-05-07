@@ -16,6 +16,15 @@ Initializer is built around a single principle: **specify what must be true, not
 
 This is the bitter-lesson play applied to engineering scaffolding. As models improve, prescriptive procedures become BLE-hobbling — they prevent the agent from finding shorter, better paths to the same outcome. Outcome contracts age with the model: a smarter agent will satisfy the same contract more efficiently, without requiring you to rewrite the prompt.
 
+## Bootstrap mode vs business mode
+
+Initializer intentionally separates **bootstrap mode** from **business mode**.
+
+- **Bootstrap mode** is the short setup period before normal implementation starts. It covers installing hooks, creating the registers, shaping beads, and other first-session scaffolding. The only relaxed behavior is the explicit bootstrap-only scanner override: `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1`, and only while no bead is in progress.
+- **Business mode** is the normal operating posture for actual feature work. In business mode, the shipped default remains `auto-land: high`, local scanners (`gitleaks`, `dep-hallucinator`) are installed, and commits no longer rely on bootstrap-only exemptions.
+
+The kickoff flow is expected to make that transition explicit before the Ralph loop starts. This keeps "we're still setting up" from silently becoming "we're shipping work under a looser posture than intended."
+
 ### The two registers (mechanical backbone)
 
 Exhaustiveness is enforced through two live registers, both maintained by the agent and validated by pre-commit hooks:
@@ -35,7 +44,7 @@ The initializer walks you through 5 phases. Each phase is an outcome contract �
 
 1. **Spec** — Done when the PRD, both registers, the review rubric, the verification gate, and the structural hooks all exist and you've approved them.
 2. **Beads** — Done when every PRD acceptance criterion is covered by a bead, every bead has a declared file scope, and you've approved the dependency graph. Each story decomposes into the quartet `impl → review → pare-down → compound`, and later-phase beads must encode that order in explicit `bd` dependencies so `bd ready` exposes a sensible starting set.
-3. **Implementation (Ralph Loop)** — Done when every bead is closed, every commit passed the verification gate, and both registers stayed complete. Each iteration is a fresh agent session that completes exactly one bead and stops.
+3. **Implementation (Ralph Loop)** — Begins only after an explicit switch into business mode. Done when every bead is closed, every commit passed the verification gate, and both registers stayed complete. Each iteration is a fresh agent session that completes exactly one bead and stops.
 4. **Holistic Review** — Done when an adversarial cross-cutting review has tried to falsify every claim in both registers, and either failed (good) or filed a bead per finding.
 5. **Final Compound** — Done when every rule that mattered is enforced structurally (not in prose), every bug class has a regression test, and the kickoff prompt has been updated with anything the next project would benefit from.
 
@@ -80,6 +89,7 @@ The initializer walks you through 5 phases. Each phase is an outcome contract �
    ```
 
 3. Direct your agent to walk through `project-kickoff-prompt.md`. It guides the agent through the full workflow: spec (PRD), beads, implementation, and review.
+   Before implementation begins, have it record the bootstrap-to-business switch explicitly: confirm `auto-land: high` (or stricter), confirm local scanners are installed, and confirm bootstrap-only overrides are no longer in play.
 
 ## The Ralph Loop
 

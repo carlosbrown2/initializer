@@ -12,6 +12,17 @@ Structural enforcement is not a substitute for human review. The hooks, register
 
 ---
 
+## Operating modes
+
+This template has two intentionally different postures:
+
+- **Bootstrap mode** — the short setup window before normal implementation starts. Use it to install hooks, create the registers, shape the bead graph, and make one-off bootstrap commits if the machine is still missing local scanners. In this mode the only scanner exemption is the explicit `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1` override, and only while no bead is in progress.
+- **Business mode** — normal project execution after bootstrap. In this mode the project should be running with the shipped safer default `auto-land: high`, local scanners installed (`gitleaks`, `dep-hallucinator`), and the Ralph loop treating the verification gate as the merge contract for every bead.
+
+The transition between these modes must be explicit. Do not drift from bootstrap into business-as-usual because "setup is probably done." Phase 2 must end with a deliberate switch to business mode before Phase 3 implementation begins.
+
+---
+
 ## The two registers
 
 These are the mechanical backbone of the project. They are the only places where exhaustiveness is enforced — everything else flows from them.
@@ -62,6 +73,7 @@ Each row must be a single line — multi-line visual continuations are not parse
 | Pattern extraction        | compound beads            | every promoted pattern carries a `model:` tag and a retire-on-upgrade rule        | CLAUDE.md model-tag validator hook                                                | bounded          |
 | Decomposition             | Phase 2                   | phase-labeled work encodes execution order in explicit `bd` dependency edges so `bd ready` can only surface a sensible starting set | pre-commit bead-graph phase-order guard in scripts/hooks/install.sh + human dep-graph review at Phase 2 | bounded          |
 | Tool / search choice      | execution                 | unconstrained — model picks                                                       | none (rationale: search strategy is exactly where we want model freedom)          | agent-discretion |
+| Bootstrap-to-business transition | between Phase 2 and Phase 3 | a project may enter normal implementation only after a deliberate mode switch that records business-mode expectations: `auto-land: high` (or stricter), installed local scanners, and no reliance on bootstrap-only overrides | Phase 2 approval checklist; re-validate before the first Ralph-run bead and any time local scanner requirements change | ritual-bounded   |
 | Model upgrade drift       | model swap                | every promoted pattern tagged with source model; retire unless re-validated       | upgrade ritual: re-run both registers under the new model before resuming         | ritual-bounded   |
 | Scope creep               | every commit              | `.current-bead-scope` declares allowed paths; infrastructure paths always allowed | scope enforcement hook                                                            | bounded          |
 | Artifact format           | review / research beads   | review artifacts cite the rubric and contain a severity clause                    | review-bead contract in scripts/ralph/prompt.md; human read of docs/reviews/<bead-id>.md | ritual-bounded   |
@@ -127,6 +139,8 @@ Done when **all** of the following hold and I have approved the bead graph:
 - Every implementation bead has, as part of its definition-of-done, an update to the failure-mode register for the module it touches.
 - Every implementation bead that introduces a new decision point (a new place agent variance can enter) has, as part of its DoD, an update to the decision register.
 - Cross-cutting checks that span multiple stories (e.g., a single property-test file covering invariants from several modules) get their own bead with its own quartet.
+- The project has a written business-mode switch checklist covering: chosen `auto-land:` policy, required local scanners, hook installation, and any bootstrap-only exemptions that must now be forbidden.
+- You have explicitly approved the switch from bootstrap mode to business mode. Phase 3 does not begin until that approval exists.
 
 Each story decomposes into the **quartet**: `impl → review → pare-down → compound`. The four passes are kept structural — at worst they are redundant, at best they catch what a single-pass review would miss. Chain each quartet with `bd dep add`.
 
@@ -136,6 +150,12 @@ Each story decomposes into the **quartet**: `impl → review → pare-down → c
 - **Compound** — Read the full arc (review artifact + pare-down notes + git diff). Promote durable patterns into `CLAUDE.md` `## Discovered Patterns` (cross-cutting) or `docs/skills/<domain>.md` (domain-specific). Every promoted pattern must carry a `model:` tag identifying which model authored it; this enables retire-on-upgrade. Ask: "would the system catch this class of issue automatically next time?" If no, add a hook, test, contract, or register row. Delete the review artifact.
 
 ### Phase 3 — Implementation (Ralph loop)
+
+This phase runs in **business mode**, not bootstrap mode. Before the first implementation bead:
+
+- `CLAUDE.md` must declare `auto-land: high` or a stricter policy.
+- Local scanners required by the hooks (`gitleaks`, `dep-hallucinator`) must be installed on the working machine.
+- No commit path may still depend on `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1`.
 
 Done when every bead is closed and **all** of the following hold for every commit:
 
@@ -190,8 +210,8 @@ If a rule matters, it must be enforced mechanically. Prose is for context; gates
 4. **Decision register integrity** — rejects commits where `docs/decision-register.md` is missing baseline rows, contains a multi-line/malformed row, has a row whose last cell isn't an acceptable Status, or names a bounding-mechanism file that does not exist.
 5. **CLAUDE.md model-tag validator** — every `### ` entry under `## Discovered Patterns` in `CLAUDE.md` must contain an anchored `model:` line so it can be retired or re-validated on model upgrade.
 6. **CLAUDE.md size guard** — rejects commits that push `CLAUDE.md` past the line limit (default 200). Domain knowledge belongs in `docs/skills/`, not in the constitution.
-7. **Secrets scan** — `gitleaks protect --staged` on every commit; rejects commits that contain hardcoded credentials, tokens, or private keys. Fail-warn (skip with a notice) when `gitleaks` is not installed so Phase 1 bootstrap is not blocked; fail-closed once installed — leaked secrets cannot be unleaked even after rotation.
-8. **Dependency hallucination check** — `dep-hallucinator check` on every staged manifest (`requirements*.txt`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`); rejects commits that introduce hallucinated or typo-squatted packages. Same fail-warn / fail-closed shape as the secrets scan.
+7. **Secrets scan** — `gitleaks protect --staged` on every commit; rejects commits that contain hardcoded credentials, tokens, or private keys. Missing `gitleaks` blocks commits by default. The only exemption is an explicit bootstrap-only commit with `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1` while no bead is in progress; business mode removes that escape hatch.
+8. **Dependency hallucination check** — `dep-hallucinator check` on every staged manifest (`requirements*.txt`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`); rejects commits that introduce hallucinated or typo-squatted packages. Missing `dep-hallucinator` follows the same bootstrap-only exception and otherwise blocks commits in business mode.
 9. **Commit-message format** — `feat|fix|refactor|review|compound|research|docs|chore|test: ...`.
 
 **The verification gate is not a pre-commit hook.** It is the single command declared in `CLAUDE.md`, e.g.:
@@ -212,5 +232,6 @@ The gate is enforced at **two points**: (1) `ralph.sh` runs the gate itself on B
 - **Methodology is yours to choose.** If you find a stronger technique than what's in `docs/skills/backpressure-catalog.md`, use it and update the catalog. Do not feel constrained by what previous projects used.
 - **When a rule starts mattering, encode it.** If you find yourself reminding the agent of a rule in prose, that rule should become a hook, a test, a schema, or a type. Promote, don't repeat.
 - **Confidence is bash-derived, not self-reported.** `compute_confidence` (`scripts/ralph/lib.sh`) maps the bash-observed gate result to HIGH or LOW; the agent emits no confidence tag. Routing happens in `ralph.sh`.
+- **Make the bootstrap-to-business switch explicit.** Before normal implementation begins, state that the project has entered business mode, confirm the `auto-land:` policy, and confirm the required local scanners are installed. If that transition is not true yet, stay in bootstrap mode and keep Phase 3 closed.
 - **Tag patterns with the model that wrote them.** Every entry under `CLAUDE.md ## Discovered Patterns` carries a `model:` tag. On model upgrade, every tagged pattern is re-validated or retired. This bounds "model upgrade drift" in the decision register.
 - **Structural over verbal at every layer.** This document is the smallest possible set of contracts. Anything you'd want to add to it should probably be a hook instead.

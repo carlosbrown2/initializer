@@ -1,6 +1,26 @@
 # Ralph Progress Log
 Started: Tue Apr 21 12:26:09 MDT 2026
 ---
+## 2026-05-07 10:31 - agent-template-p8e
+- Type: impl
+- What was done
+- Added an explicit bootstrap-mode versus business-mode contract to the shipped kickoff prompt, including a required handoff before Phase 3 begins.
+- Updated the README to document the same transition and to tell downstream users to confirm `auto-land: high` or stricter, installed local scanners, and the end of bootstrap-only overrides before starting the Ralph loop.
+- Added a decision-register row and a failure-mode row for the bootstrap-to-business handoff, and pinned the new shipped wording in `tests/hooks/ralph.bats`.
+- Files changed
+- .beads/issues.jsonl
+- README.md
+- docs/decision-register.md
+- docs/failure-modes.md
+- project-kickoff-prompt.md
+- scripts/ralph/archive.txt
+- tests/hooks/ralph.bats
+- Register updates: failure-modes rows added: 1 | decision rows added: 1
+- **Learnings for future iterations:**
+  - When the harness has a temporary bootstrap exception, the prompt must also define the exit from that exception or downstream projects will treat setup posture as steady state.
+  - README and kickoff prompt need matching transition language; pinning both in bats is a cheap way to stop doc drift from reopening the gap.
+  - Business-mode expectations are small but concrete: auto-land policy, local scanners present, and bootstrap-only overrides no longer acceptable.
+---
 ## 2026-05-06 14:43 - agent-template-4al
 - Type: impl
 - What was done

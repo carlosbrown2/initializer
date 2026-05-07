@@ -492,6 +492,18 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "README documents the explicit bootstrap-to-business transition" {
+  run grep -F "The kickoff flow is expected to make that transition explicit before the Ralph loop starts." \
+    "$PROJECT_ROOT/README.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "project kickoff prompt requires a business-mode switch before Phase 3" {
+  run grep -F "You have explicitly approved the switch from bootstrap mode to business mode. Phase 3 does not begin until that approval exists." \
+    "$PROJECT_ROOT/project-kickoff-prompt.md"
+  [ "$status" -eq 0 ]
+}
+
 # --- should_auto_land ---------------------------------------------------
 
 @test "should_auto_land: policy=all, any confidence -> true" {
