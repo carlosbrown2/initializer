@@ -1430,3 +1430,24 @@ Started: Tue Apr 21 12:26:09 MDT 2026
   - The preserved patch was directionally right, but deleting the git-index fallback and environment-blocker routing was a separate decision and did not belong in this bead.
   - For sandbox fixes, pin the exact CLI configuration string in tests so a future refactor cannot silently reintroduce the original permission failure.
 ---
+## 2026-05-06 18:59 - agent-template-4al
+- Type: impl
+- What was done
+- Reapplied the `agent-template-4al` scanner-hardening diff to the live worktree: `scripts/hooks/install.sh` now fail-closes on missing `gitleaks` / `dep-hallucinator` with the explicit bootstrap-only `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1` escape hatch, the README and both registers now describe that contract, and hook tests now cover block-on-missing, explicit bootstrap override, and override rejection once a bead is in progress.
+- Ran `bash -n scripts/ralph/ralph.sh && bash -n scripts/ralph/lib.sh && bash -n scripts/hooks/install.sh && bash -n scripts/hooks/parsers.sh && shellcheck -x scripts/ralph/ralph.sh scripts/ralph/lib.sh scripts/hooks/install.sh scripts/hooks/parsers.sh && bd --version 2>/dev/null | grep -qE '^bd version ([1-9]|0\.([3-9]|[1-9][0-9]))' && bats tests/hooks/ && bats tests/gate/` and it passed.
+- The remaining blocker is environmental: the real local commit hook now correctly blocks because neither `gitleaks` nor `dep-hallucinator` exists on `PATH`, so this session cannot create the required implementation commit without weakening the just-added protection.
+- Files changed
+- .beads/issues.jsonl
+- README.md
+- docs/decision-register.md
+- docs/failure-modes.md
+- scripts/hooks/install.sh
+- scripts/ralph/archive.txt
+- tests/hooks/generated_hooks_e2e.bats
+- tests/hooks/pre_commit.bats
+- Register updates: failure-modes rows added: 0 | decision rows added: 1
+- **Learnings for future iterations:**
+  - When a bead hardens local hooks from fail-warn to fail-closed, check the operator machine for the required binaries before trying to land the bead; otherwise the implementation can be correct but uncommittable.
+  - The scanner-override design is mechanically pinned and green; the next successful session should only need installed `gitleaks` and `dep-hallucinator` plus normal close/commit flow.
+  - Clearing the bead marker files before blocking keeps the repo state aligned with the environment failure rather than leaving a stale in-progress marker behind.
+---

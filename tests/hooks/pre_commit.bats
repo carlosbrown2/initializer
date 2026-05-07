@@ -29,6 +29,18 @@ exit 1
 EOF
   chmod +x "$TMPDIR_TEST/bin/bd"
 
+  cat > "$TMPDIR_TEST/bin/gitleaks" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "$TMPDIR_TEST/bin/gitleaks"
+
+  cat > "$TMPDIR_TEST/bin/dep-hallucinator" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "$TMPDIR_TEST/bin/dep-hallucinator"
+
   PATH="$TMPDIR_TEST/bin:$PATH" bash "$TEST_REPO/scripts/hooks/install.sh" >/dev/null
 }
 

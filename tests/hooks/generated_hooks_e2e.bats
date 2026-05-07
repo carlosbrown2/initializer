@@ -75,7 +75,12 @@ printf gate-pass > .gate-ran
 ```
 EOF
 
-  PATH="$BIN_DIR:$PATH" bash "$TEST_REPO/scripts/hooks/install.sh" >/dev/null
+  # Use a minimal PATH that contains only the canonical system-tool dirs so a
+  # host-installed gitleaks/dep-hallucinator (e.g., from /usr/local/bin or
+  # ~/.local/bin) cannot shadow the "missing scanner" simulations below.
+  TEST_PATH="$BIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin"
+
+  PATH="$TEST_PATH" bash "$TEST_REPO/scripts/hooks/install.sh" >/dev/null
   git -C "$TEST_REPO" add CLAUDE.md scripts/hooks/install.sh scripts/hooks/parsers.sh
   git_commit "chore: init"
 }
@@ -85,7 +90,16 @@ teardown() {
 }
 
 git_commit() {
-  ( cd "$TEST_REPO" && PATH="$BIN_DIR:$PATH" git commit -q -m "$1" )
+  ( cd "$TEST_REPO" && PATH="$TEST_PATH" git commit -q -m "$1" )
+}
+
+git_commit_with_bootstrap_override() {
+  (
+    cd "$TEST_REPO" &&
+      BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1 \
+      PATH="$TEST_PATH" \
+      git commit -q -m "$1"
+  )
 }
 
 set_in_progress_bead() {
@@ -151,15 +165,49 @@ set_mock_graph_issue() {
   [[ "$output" == *"BLOCKED: dep-hallucinator detected suspect dependencies"* ]]
 }
 
-@test "generated pre-commit warns but permits commit when optional scanners are missing" {
-  rm "$BIN_DIR/gitleaks" "$BIN_DIR/dep-hallucinator"
+@test "generated pre-commit blocks when gitleaks is missing without bootstrap override" {
+  rm "$BIN_DIR/gitleaks"
+  printf 'notes\n' > "$TEST_REPO/notes.txt"
+  git -C "$TEST_REPO" add notes.txt
+
+  run git_commit "chore: add package manifest"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BLOCKED: gitleaks is required for local commits but is not installed."* ]]
+  [[ "$output" == *"BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1"* ]]
+}
+
+@test "generated pre-commit blocks when dep-hallucinator is missing without bootstrap override" {
+  rm "$BIN_DIR/dep-hallucinator"
   printf '{"dependencies":{"left-pad":"1.3.0"}}\n' > "$TEST_REPO/package.json"
   git -C "$TEST_REPO" add package.json
 
   run git_commit "chore: add package manifest"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BLOCKED: dep-hallucinator is required for local commits but is not installed."* ]]
+  [[ "$output" == *"BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1"* ]]
+}
+
+@test "generated pre-commit permits explicit bootstrap override when no bead is in progress" {
+  rm "$BIN_DIR/gitleaks" "$BIN_DIR/dep-hallucinator"
+  printf '{"dependencies":{"left-pad":"1.3.0"}}\n' > "$TEST_REPO/package.json"
+  git -C "$TEST_REPO" add package.json
+
+  run git_commit_with_bootstrap_override "chore: add package manifest"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"WARNING: gitleaks not installed"* ]]
-  [[ "$output" == *"WARNING: dep-hallucinator not installed"* ]]
+  [[ "$output" == *"WARNING: gitleaks is not installed, but BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1"* ]]
+  [[ "$output" == *"WARNING: dep-hallucinator is not installed, but BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1"* ]]
+}
+
+@test "generated pre-commit ignores bootstrap override once a bead is in progress" {
+  set_in_progress_bead impl
+  printf 'allowed.txt\n' > "$TEST_REPO/.current-bead-scope"
+  rm "$BIN_DIR/gitleaks"
+  printf 'allowed\n' > "$TEST_REPO/allowed.txt"
+  git -C "$TEST_REPO" add allowed.txt
+
+  run git_commit_with_bootstrap_override "feat: [agent-template-3ne] - Add allowed file"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"BLOCKED: gitleaks is required for local commits but is not installed."* ]]
 }
 
 @test "generated pre-push extracts and runs the CLAUDE.md verification gate" {

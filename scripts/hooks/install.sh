@@ -4,9 +4,9 @@
 #
 # Hooks installed (pre-commit, in execution order inside the hook):
 #   1. CLAUDE.md size guard
-#   2. Secrets scan (gitleaks; warns and continues if gitleaks not installed)
-#   3. Dependency hallucination check (active; warns if dep-hallucinator not installed)
-#   4. Bead type fail-closed gate (fail-closed on bd extraction failure)
+#   2. Bead type fail-closed gate (fail-closed on bd extraction failure)
+#   3. Secrets scan (gitleaks; missing binary blocks unless explicit bootstrap override is set)
+#   4. Dependency hallucination check (missing scanner blocks unless explicit bootstrap override is set)
 #   5. Scope enforcement
 #   6. Failure-mode register integrity
 #   7. Decision register integrity
@@ -26,6 +26,7 @@ set -euo pipefail
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$HOOKS_DIR/../.." && pwd)"
 GIT_HOOKS_DIR="$PROJECT_ROOT/.git/hooks"
+LOCAL_SCANNER_BOOTSTRAP_ENV="BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS"
 
 if [ ! -d "$GIT_HOOKS_DIR" ]; then
   echo "Error: .git/hooks not found. Run 'git init' first."
@@ -40,6 +41,7 @@ set -euo pipefail
 
 PROJECT_ROOT="$(git rev-parse --show-toplevel)"
 CLAUDE_MD_MAX_LINES=200
+LOCAL_SCANNER_BOOTSTRAP_ENV="BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS"
 
 # Register-integrity parsers live in scripts/hooks/parsers.sh so they can be
 # exercised by tests/hooks/parsers.bats outside a live pre-commit context.
@@ -65,53 +67,6 @@ if git diff --cached --name-only | grep -q "^CLAUDE.md$"; then
     echo "    3. Keep only cross-cutting rules, invariants, and architecture decisions in CLAUDE.md"
     echo "    4. Reference the skill file from CLAUDE.md if needed: 'See docs/skills/<domain>.md'"
     exit 1
-  fi
-fi
-
-# --- Secrets scan ---
-# gitleaks scans staged changes for hardcoded credentials (API keys, tokens,
-# private keys, etc.). For a backend that handles customer data + LLM API
-# keys + model-generated SQL, a leaked credential is a P0 incident class
-# with no other mechanical check in this chain. The block is fail-warn if
-# gitleaks is not installed (so Phase 1 bootstrap on a fresh machine is not
-# blocked) but fail-closed if gitleaks is installed and reports findings.
-# Install once and the warning goes away; once installed, it stays binding.
-if command -v gitleaks >/dev/null 2>&1; then
-  if ! gitleaks protect --staged --no-banner --redact; then
-    echo ""
-    echo "BLOCKED: gitleaks detected potential secrets in staged changes."
-    echo ""
-    echo "  Review the findings above. If a finding is a verified false positive,"
-    echo "  add its fingerprint to .gitleaksignore (one per line) and re-stage."
-    echo "  Never bypass with --no-verify — leaked secrets cannot be unleaked."
-    exit 1
-  fi
-else
-  echo "WARNING: gitleaks not installed; skipping secrets scan."
-  echo "  Install: brew install gitleaks   (or: https://github.com/gitleaks/gitleaks)"
-fi
-
-# --- Dependency hallucination check ---
-# dep-hallucinator scans staged manifest files for hallucinated/typo-squatted
-# packages — a real attack surface for LLM-generated code that proposes
-# imports. Fail-warn if dep-hallucinator is not installed (Phase 1 bootstrap
-# may run before tooling is present) but fail-closed if it is installed and
-# reports findings on a staged manifest.
-MANIFEST_FILES=$(git diff --cached --name-only | grep -E '(requirements.*\.txt|package\.json|pyproject\.toml|Cargo\.toml|go\.mod)' || true)
-if [ -n "$MANIFEST_FILES" ]; then
-  if command -v dep-hallucinator >/dev/null 2>&1; then
-    # shellcheck disable=SC2086  # MANIFEST_FILES is intentionally word-split.
-    if ! dep-hallucinator check $MANIFEST_FILES; then
-      echo "BLOCKED: dep-hallucinator detected suspect dependencies in staged manifests."
-      echo ""
-      echo "  Review the findings above. Each flagged package is a candidate for typo-squat,"
-      echo "  hallucination, or supply-chain risk — verify upstream provenance before merging."
-      echo "  Never bypass with --no-verify — hallucinated deps are an exploitable vector."
-      exit 1
-    fi
-  else
-    echo "WARNING: dep-hallucinator not installed; skipping dependency validation."
-    echo "  Install: pip install dep-hallucinator   (or: npm install -g dep-hallucinator)"
   fi
 fi
 
@@ -145,6 +100,28 @@ if command -v bd >/dev/null 2>&1; then
   fi
 fi
 
+bootstrap_scanner_override_active() {
+  [ -z "$IN_PROGRESS_BEAD" ] && [ "${!LOCAL_SCANNER_BOOTSTRAP_ENV:-}" = "1" ]
+}
+
+missing_scanner_block() {
+  local scanner_name="$1"
+  local install_hint="$2"
+  echo "BLOCKED: $scanner_name is required for local commits but is not installed."
+  echo ""
+  echo "  Install: $install_hint"
+  echo "  If you are still bootstrapping and no bead is in progress, retry only this"
+  echo "  commit with $LOCAL_SCANNER_BOOTSTRAP_ENV=1 to acknowledge the temporary risk."
+  echo "  Once normal implementation begins, missing scanners fail closed."
+  exit 1
+}
+
+missing_scanner_bootstrap_warning() {
+  local scanner_name="$1"
+  echo "WARNING: $scanner_name is not installed, but $LOCAL_SCANNER_BOOTSTRAP_ENV=1"
+  echo "  is allowing this bootstrap-only commit to proceed."
+}
+
 if [ -n "$IN_PROGRESS_BEAD" ]; then
   case "$BEAD_TYPE" in
     impl|review|pare|compound|research)
@@ -169,6 +146,53 @@ if [ -n "$IN_PROGRESS_BEAD" ]; then
       exit 1
       ;;
   esac
+fi
+
+# --- Secrets scan ---
+# gitleaks scans staged changes for hardcoded credentials (API keys, tokens,
+# private keys, etc.). For a backend that handles customer data + LLM API
+# keys + model-generated SQL, a leaked credential is a P0 incident class
+# with no other mechanical check in this chain. Missing local scanners now
+# fail closed by default; the only exception is an explicit bootstrap-only
+# one-shot override before any bead is in progress.
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --no-banner --redact; then
+    echo ""
+    echo "BLOCKED: gitleaks detected potential secrets in staged changes."
+    echo ""
+    echo "  Review the findings above. If a finding is a verified false positive,"
+    echo "  add its fingerprint to .gitleaksignore (one per line) and re-stage."
+    echo "  Never bypass with --no-verify — leaked secrets cannot be unleaked."
+    exit 1
+  fi
+elif bootstrap_scanner_override_active; then
+  missing_scanner_bootstrap_warning "gitleaks"
+else
+  missing_scanner_block "gitleaks" "brew install gitleaks   (or: https://github.com/gitleaks/gitleaks)"
+fi
+
+# --- Dependency hallucination check ---
+# dep-hallucinator scans staged manifest files for hallucinated/typo-squatted
+# packages — a real attack surface for LLM-generated code that proposes
+# imports. Missing local scanners fail closed by default; the bootstrap-only
+# override above is the only exemption, and only before a bead is active.
+MANIFEST_FILES=$(git diff --cached --name-only | grep -E '(requirements.*\.txt|package\.json|pyproject\.toml|Cargo\.toml|go\.mod)' || true)
+if [ -n "$MANIFEST_FILES" ]; then
+  if command -v dep-hallucinator >/dev/null 2>&1; then
+    # shellcheck disable=SC2086  # MANIFEST_FILES is intentionally word-split.
+    if ! dep-hallucinator check $MANIFEST_FILES; then
+      echo "BLOCKED: dep-hallucinator detected suspect dependencies in staged manifests."
+      echo ""
+      echo "  Review the findings above. Each flagged package is a candidate for typo-squat,"
+      echo "  hallucination, or supply-chain risk — verify upstream provenance before merging."
+      echo "  Never bypass with --no-verify — hallucinated deps are an exploitable vector."
+      exit 1
+    fi
+  elif bootstrap_scanner_override_active; then
+    missing_scanner_bootstrap_warning "dep-hallucinator"
+  else
+    missing_scanner_block "dep-hallucinator" "pip install dep-hallucinator   (or: npm install -g dep-hallucinator)"
+  fi
 fi
 
 # --- Scope enforcement (bead-level) ---
@@ -605,7 +629,7 @@ echo "  - Pre-commit: Failure-mode register integrity (active — fires only if 
 echo "  - Pre-commit: Decision register integrity + bounding-mechanism file refs (active — fires only if docs/decision-register.md exists)"
 echo "  - Pre-commit: CLAUDE.md model-tag validator (active — fires only if CLAUDE.md is staged)"
 echo "  - Pre-commit: CLAUDE.md size guard (active)"
-echo "  - Pre-commit: Secrets scan (active — runs gitleaks if installed; warns and continues otherwise)"
-echo "  - Pre-commit: Dependency hallucination check (active — runs dep-hallucinator on staged manifests if installed; warns and continues otherwise)"
+echo "  - Pre-commit: Secrets scan (active — gitleaks required unless bootstrap commit sets $LOCAL_SCANNER_BOOTSTRAP_ENV=1)"
+echo "  - Pre-commit: Dependency hallucination check (active — dep-hallucinator required for staged manifests unless bootstrap commit sets $LOCAL_SCANNER_BOOTSTRAP_ENV=1)"
 echo "  - Commit-msg: Format validation (active — [bead-id] - <title> enforced for bead commits)"
 echo "  - Pre-push:   Verification gate re-run (active — extracts gate from CLAUDE.md and compares against .last-gate-result if present)"

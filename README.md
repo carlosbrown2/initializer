@@ -66,11 +66,13 @@ The initializer walks you through 5 phases. Each phase is an outcome contract â€
    # bats (runs tests/hooks/; part of the verification gate)
    brew install bats-core      # or: npm install -g bats
 
-   # Secrets scan. Local hooks warn and continue if missing during Phase 1 bootstrap;
-   # CI installs and runs the scanner fail-closed.
+   # Secrets scan. Local hooks require gitleaks by default; the only exemption
+   # is a bootstrap-only commit with BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1
+   # while no bead is in progress. CI also installs and runs the scanner fail-closed.
    brew install gitleaks       # or: https://github.com/gitleaks/gitleaks
 
-   # Dependency hallucination detection. Same local fail-warn / CI fail-closed shape as gitleaks.
+   # Dependency hallucination detection. Same bootstrap-only local exemption /
+   # CI fail-closed shape as gitleaks.
    pip install dep-hallucinator   # or: npm install -g dep-hallucinator
 
    # Pre-commit hooks (optional but recommended)
@@ -154,8 +156,8 @@ Nine pre-commit hooks ship enabled, plus a commit-msg format hook and a pre-push
 | Hook | What it enforces |
 |---|---|
 | CLAUDE.md size guard | Rejects commits pushing `CLAUDE.md` over 200 lines. Domain knowledge overflows to `docs/skills/` rather than letting the project-rules file accrete. |
-| Secrets scan | Runs `gitleaks protect --staged` on every commit; rejects commits that contain hardcoded credentials, tokens, or private keys. Local hooks fail-warn if `gitleaks` is not installed so Phase 1 bootstrap is not blocked, while CI installs `gitleaks` and runs `gitleaks detect --source . --redact` fail-closed before the verification gate. |
-| Dependency hallucination check | Runs `dep-hallucinator check` on staged manifest files (`requirements*.txt`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`); rejects commits that introduce hallucinated or typo-squatted packages. Local hooks fail-warn when the scanner is missing; CI installs `dep-hallucinator` and runs it fail-closed over tracked manifests. |
+| Secrets scan | Runs `gitleaks protect --staged` on every commit; rejects commits that contain hardcoded credentials, tokens, or private keys. Missing `gitleaks` now blocks local commits too, unless a bootstrap-only commit explicitly sets `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1` while no bead is in progress. CI still installs `gitleaks` and runs `gitleaks detect --source . --redact` fail-closed before the verification gate. |
+| Dependency hallucination check | Runs `dep-hallucinator check` on staged manifest files (`requirements*.txt`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`); rejects commits that introduce hallucinated or typo-squatted packages. Missing `dep-hallucinator` blocks local manifest commits too, unless the same bootstrap-only override is explicitly set before any bead is in progress. CI installs `dep-hallucinator` and runs it fail-closed over tracked manifests. |
 | Bead type fail-closed gate | When a bead is in progress, `.current-bead-type` must exist and hold a valid value (`impl`/`review`/`pare`/`compound`/`research`). Closes the "skip the marker â†’ no enforcement" bypass for the hooks below. Fail-closed on `bd` extraction errors too: if `bd list --status=in_progress --json` fails or returns non-parseable JSON, the commit is BLOCKED rather than silently treated as "no bead in progress". |
 | Scope enforcement | `impl`/`pare`/`compound` beads must declare `.current-bead-scope`; commits outside the scope are rejected (infrastructure paths exempted; compound beads also get `CLAUDE.md`, `docs/skills/`, and `tests/regression/`). |
 | Failure-mode register integrity | Every row in `docs/failure-modes.md` is single-line, its last cell holds an acceptable Status (`covered`/`proven-impossible`/`out-of-scope`), and every referenced check file exists on disk. |
