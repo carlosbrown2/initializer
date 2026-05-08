@@ -5,6 +5,7 @@ scripts/ralph/archive.txt
 .current-bead-type
 .current-bead-scope
 .last-gate-result
+.last-landing-diagnostic
 
 # OS
 .DS_Store

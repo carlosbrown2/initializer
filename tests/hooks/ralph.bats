@@ -113,10 +113,16 @@ EOF
 
   lock_path="$TMPDIR_TEST/repo/.git/index.lock"
   printf 'stale lock\n' > "$lock_path"
+  # Seed a stale .last-landing-diagnostic so we can prove a successful
+  # probe wipes the prior failure evidence (otherwise the file would
+  # outlive a recovered run and confuse the next post-mortem).
+  printf 'stale diagnostic from a prior failure\n' \
+    > "$TMPDIR_TEST/repo/.last-landing-diagnostic"
 
   run ensure_git_index_writable "$TMPDIR_TEST/repo"
   [ "$status" -eq 0 ]
   [ ! -e "$lock_path" ]
+  [ ! -e "$TMPDIR_TEST/repo/.last-landing-diagnostic" ]
 }
 
 @test "ensure_git_index_writable: repairs stripped write bits before probing again" {
@@ -169,8 +175,59 @@ EOF
   /bin/chmod 0555 "$TMPDIR_TEST/repo/.git"
   /bin/chmod 0444 "$TMPDIR_TEST/repo/.git/index"
 
-  run ensure_git_index_writable "$TMPDIR_TEST/repo"
+  # Override the runtime retry budget so the test does not pay the
+  # default 10×2s wall time for what is fundamentally a single-shot
+  # "probe was rejected" assertion.
+  _RALPH_INDEX_PROBE_ATTEMPTS=1 _RALPH_INDEX_PROBE_SLEEP=0 \
+    run ensure_git_index_writable "$TMPDIR_TEST/repo"
   [ "$status" -ne 0 ]
+}
+
+@test "ensure_git_index_writable: persists per-attempt diagnostic to .last-landing-diagnostic on failure" {
+  mkdir -p "$TMPDIR_TEST/repo"
+  mkdir -p "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/git" <<EOF
+#!/bin/bash
+if [ "\$1" = "-C" ]; then
+  shift 2
+fi
+if [ "\$1 \$2" = "rev-parse --git-dir" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index.lock" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index.lock"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/git"
+  cat > "$TMPDIR_TEST/bin/chmod" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/chmod"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  mkdir -p "$TMPDIR_TEST/repo/.git"
+  : > "$TMPDIR_TEST/repo/.git/index"
+  /bin/chmod 0555 "$TMPDIR_TEST/repo/.git"
+  /bin/chmod 0444 "$TMPDIR_TEST/repo/.git/index"
+
+  # Force two attempts so we exercise both the per-attempt diagnostic
+  # line and the final GIVING UP summary; sleep 0 keeps the test fast.
+  _RALPH_INDEX_PROBE_ATTEMPTS=2 _RALPH_INDEX_PROBE_SLEEP=0 \
+    run ensure_git_index_writable "$TMPDIR_TEST/repo"
+  [ "$status" -ne 0 ]
+  [ -f "$TMPDIR_TEST/repo/.last-landing-diagnostic" ]
+  diagnostic=$(cat "$TMPDIR_TEST/repo/.last-landing-diagnostic")
+  [[ "$diagnostic" == *"probe attempt 1/2 failed"* ]]
+  [[ "$diagnostic" == *"GIVING UP after 2 attempts"* ]]
+  [[ "$diagnostic" == *"index=$TMPDIR_TEST/repo/.git/index"* ]]
 }
 
 @test "git_worktree_status: prints porcelain output for dirty files" {
@@ -948,7 +1005,11 @@ EOF
   # operators can see *why* git can't be written; the machine-readable
   # token stays on stdout for callers like handle_post_bead_done_routing
   # that route on it.
-  run --separate-stderr auto_land_bead "$TMPDIR_TEST/repo" "agent-template-bx8"
+  #
+  # _RALPH_INDEX_PROBE_*: keep wall time bounded — without these the
+  # default 10×2s retry budget would run for ~20s in this test alone.
+  _RALPH_INDEX_PROBE_ATTEMPTS=1 _RALPH_INDEX_PROBE_SLEEP=0 \
+    run --separate-stderr auto_land_bead "$TMPDIR_TEST/repo" "agent-template-bx8"
   [ "$status" -ne 0 ]
   [ "$output" = "GIT_INDEX_UNWRITABLE" ]
 }

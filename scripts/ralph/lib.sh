@@ -70,29 +70,60 @@ tracker_has_unfinished_beads() {
 #    to ralph.sh — auto_land_bead runs immediately after, and the lockfile
 #    can briefly outlive the codex exit on macOS)
 #
-# Diagnostic output goes to stderr on every failure so future occurrences
-# don't re-create the "we tried many things and don't know what failed"
-# debugging gap that produced this fix. The fix originated from
-# confidence.log iter=1 2026-05-07T10:33:29 — gate=PASS, bead committed,
-# but landing returned GIT_INDEX_UNWRITABLE with no further info, leaving
-# the just-built bead stranded locally.
+# Diagnostic output goes to stderr on every failure AND is persisted to
+# ${repo_root}/.last-landing-diagnostic so it survives a lost terminal
+# scrollback / piped run / harvested-confidence.log post-mortem. confidence.log
+# only carries the opaque GIT_INDEX_UNWRITABLE token, so the operator
+# previously had no actionable evidence after the loop stopped. The
+# previous fix (agent-template-13j) added stderr diagnostic + 5×1s retry,
+# but the loop stranded beads twice more (cb063b6 on 2026-05-07T10:33:29
+# and 148e1f0 on 2026-05-08T10:10:07) with the diagnostic lost to scroll
+# rotation. Persisting the diagnostic + extending the retry budget to
+# 10×2s closes both of those gaps without changing the machine-readable
+# stdout contract.
+#
+# A successful probe deletes any stale .last-landing-diagnostic so the
+# file always reflects the most recent failure (or its absence reflects
+# the most recent success).
 #
 # If the final probe still fails, the environment is genuinely blocking git
 # writes and the caller should treat that as a hard blocker.
 ensure_git_index_writable() {
   local repo_root="$1"
   local git_dir index_path lock_path attempt probe_err existing_lock
+  local diagnostic_path="$repo_root/.last-landing-diagnostic"
+  local diagnostic_buf=""
+  # Retry budget knobs are env-overridable so the bats failure test can
+  # collapse the 10×2s wall time without weakening the runtime defaults.
+  local max_attempts="${_RALPH_INDEX_PROBE_ATTEMPTS:-10}"
+  local sleep_seconds="${_RALPH_INDEX_PROBE_SLEEP:-2}"
+
+  _ralph_index_diag() {
+    # Append a diagnostic line to both stderr and the in-memory buffer.
+    # The buffer is flushed to .last-landing-diagnostic on final failure
+    # so the file always carries the full per-attempt history, not just
+    # the last line.
+    local line="$1"
+    printf '%s\n' "$line" >&2
+    diagnostic_buf+="$line"$'\n'
+  }
 
   git_dir=$(git -C "$repo_root" rev-parse --git-dir 2>/dev/null) || {
-    printf 'ralph: ensure_git_index_writable: git rev-parse --git-dir failed in %s\n' "$repo_root" >&2
+    _ralph_index_diag "ralph: ensure_git_index_writable: git rev-parse --git-dir failed in $repo_root"
+    printf '%s' "$diagnostic_buf" > "$diagnostic_path" 2>/dev/null || true
+    unset -f _ralph_index_diag
     return 1
   }
   index_path=$(git -C "$repo_root" rev-parse --git-path index 2>/dev/null) || {
-    printf 'ralph: ensure_git_index_writable: git rev-parse --git-path index failed in %s\n' "$repo_root" >&2
+    _ralph_index_diag "ralph: ensure_git_index_writable: git rev-parse --git-path index failed in $repo_root"
+    printf '%s' "$diagnostic_buf" > "$diagnostic_path" 2>/dev/null || true
+    unset -f _ralph_index_diag
     return 1
   }
   lock_path=$(git -C "$repo_root" rev-parse --git-path index.lock 2>/dev/null) || {
-    printf 'ralph: ensure_git_index_writable: git rev-parse --git-path index.lock failed in %s\n' "$repo_root" >&2
+    _ralph_index_diag "ralph: ensure_git_index_writable: git rev-parse --git-path index.lock failed in $repo_root"
+    printf '%s' "$diagnostic_buf" > "$diagnostic_path" 2>/dev/null || true
+    unset -f _ralph_index_diag
     return 1
   }
 
@@ -100,36 +131,39 @@ ensure_git_index_writable() {
   [[ "$index_path" = /* ]] || index_path="$repo_root/$index_path"
   [[ "$lock_path" = /* ]] || lock_path="$repo_root/$lock_path"
 
-  for attempt in 1 2 3 4 5; do
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     rm -f "$lock_path" 2>/dev/null || true
     if probe_err=$({ : > "$lock_path"; } 2>&1); then
       rm -f "$lock_path" 2>/dev/null || true
+      rm -f "$diagnostic_path" 2>/dev/null || true
+      unset -f _ralph_index_diag
       return 0
     fi
 
     chmod u+w "$git_dir" "$index_path" 2>/dev/null || true
     if probe_err=$({ : > "$lock_path"; } 2>&1); then
       rm -f "$lock_path" 2>/dev/null || true
+      rm -f "$diagnostic_path" 2>/dev/null || true
+      unset -f _ralph_index_diag
       return 0
     fi
 
-    if [ "$attempt" -lt 5 ]; then
+    if [ "$attempt" -lt "$max_attempts" ]; then
       existing_lock=""
       if [ -e "$lock_path" ]; then
         existing_lock=" (existing lock present)"
       fi
-      printf 'ralph: ensure_git_index_writable: probe attempt %d/5 failed%s: %s\n' \
-        "$attempt" "$existing_lock" "$probe_err" >&2
-      sleep 1
+      _ralph_index_diag "ralph: ensure_git_index_writable: probe attempt $attempt/$max_attempts failed${existing_lock}: $probe_err"
+      [ "$sleep_seconds" -gt 0 ] && sleep "$sleep_seconds"
     fi
   done
 
-  printf 'ralph: ensure_git_index_writable: GIVING UP after 5 attempts: %s\n' "$probe_err" >&2
-  printf 'ralph: ensure_git_index_writable:   git_dir=%s\n' "$git_dir" >&2
-  printf 'ralph: ensure_git_index_writable:   index=%s perms=%s\n' \
-    "$index_path" "$(ls -ld "$index_path" 2>/dev/null || echo missing)" >&2
-  printf 'ralph: ensure_git_index_writable:   lock=%s perms=%s\n' \
-    "$lock_path" "$(ls -ld "$lock_path" 2>/dev/null || echo absent)" >&2
+  _ralph_index_diag "ralph: ensure_git_index_writable: GIVING UP after $max_attempts attempts: $probe_err"
+  _ralph_index_diag "ralph: ensure_git_index_writable:   git_dir=$git_dir perms=$(ls -ld "$git_dir" 2>/dev/null || echo missing)"
+  _ralph_index_diag "ralph: ensure_git_index_writable:   index=$index_path perms=$(ls -ld "$index_path" 2>/dev/null || echo missing)"
+  _ralph_index_diag "ralph: ensure_git_index_writable:   lock=$lock_path perms=$(ls -ld "$lock_path" 2>/dev/null || echo absent)"
+  printf '%s' "$diagnostic_buf" > "$diagnostic_path" 2>/dev/null || true
+  unset -f _ralph_index_diag
   return 1
 }
 
