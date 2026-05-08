@@ -1,6 +1,22 @@
 # Ralph Progress Log
 Started: Tue Apr 21 12:26:09 MDT 2026
 ---
+## 2026-05-08 10:07 - agent-template-tw4
+- Type: review
+- What was done
+- Reviewed the bootstrap-to-business hardening across `agent-template-6m4`, `agent-template-4al`, and `agent-template-p8e`, with a focused adversarial pass on whether downstream projects can retain permissive bootstrap posture.
+- Wrote `docs/reviews/agent-template-tw4.md` with two P2 findings: the business-mode switch is only pinned as template wording, and the scanner-exemption branch for `bd` absence is not mechanically pinned by tests.
+- Filed follow-up beads `agent-template-8jv` and `agent-template-zh2` for the two independent tightenings.
+- Files changed
+- .beads/issues.jsonl
+- docs/reviews/agent-template-tw4.md
+- scripts/ralph/archive.txt
+- Register updates: none
+- **Learnings for future iterations:**
+  - Grepping for safety wording only proves the template says the right thing; it does not prove a downstream project recorded or enforced the switch that the wording describes.
+  - When bootstrap/business mode is derived from tool availability, tests need to pin the exact “tool absent” branch, not just the happy path and mocked in-progress path.
+  - Review beads around decision boundaries are most useful when they probe proxy-vs-property gaps in the cited checks, not just the implementation diff.
+---
 ## 2026-05-07 10:31 - agent-template-p8e
 - Type: impl
 - What was done
