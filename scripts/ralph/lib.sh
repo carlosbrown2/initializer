@@ -64,33 +64,72 @@ tracker_has_unfinished_beads() {
 # 1. remove any stale lock file
 # 2. try a create/remove probe
 # 3. if that fails, chmod the git dir and index file writable and retry
+# 4. retry the whole sequence a few times with brief sleeps to ride out
+#    transient locks held by a sibling process that is still tearing down
+#    (e.g., codex's sandboxed git child after `codex exec` returns control
+#    to ralph.sh — auto_land_bead runs immediately after, and the lockfile
+#    can briefly outlive the codex exit on macOS)
 #
-# If the second probe still fails, the environment is genuinely blocking git
+# Diagnostic output goes to stderr on every failure so future occurrences
+# don't re-create the "we tried many things and don't know what failed"
+# debugging gap that produced this fix. The fix originated from
+# confidence.log iter=1 2026-05-07T10:33:29 — gate=PASS, bead committed,
+# but landing returned GIT_INDEX_UNWRITABLE with no further info, leaving
+# the just-built bead stranded locally.
+#
+# If the final probe still fails, the environment is genuinely blocking git
 # writes and the caller should treat that as a hard blocker.
 ensure_git_index_writable() {
   local repo_root="$1"
-  local git_dir index_path lock_path
+  local git_dir index_path lock_path attempt probe_err existing_lock
 
-  git_dir=$(git -C "$repo_root" rev-parse --git-dir 2>/dev/null) || return 1
-  index_path=$(git -C "$repo_root" rev-parse --git-path index 2>/dev/null) || return 1
-  lock_path=$(git -C "$repo_root" rev-parse --git-path index.lock 2>/dev/null) || return 1
+  git_dir=$(git -C "$repo_root" rev-parse --git-dir 2>/dev/null) || {
+    printf 'ralph: ensure_git_index_writable: git rev-parse --git-dir failed in %s\n' "$repo_root" >&2
+    return 1
+  }
+  index_path=$(git -C "$repo_root" rev-parse --git-path index 2>/dev/null) || {
+    printf 'ralph: ensure_git_index_writable: git rev-parse --git-path index failed in %s\n' "$repo_root" >&2
+    return 1
+  }
+  lock_path=$(git -C "$repo_root" rev-parse --git-path index.lock 2>/dev/null) || {
+    printf 'ralph: ensure_git_index_writable: git rev-parse --git-path index.lock failed in %s\n' "$repo_root" >&2
+    return 1
+  }
 
   [[ "$git_dir" = /* ]] || git_dir="$repo_root/$git_dir"
   [[ "$index_path" = /* ]] || index_path="$repo_root/$index_path"
   [[ "$lock_path" = /* ]] || lock_path="$repo_root/$lock_path"
 
-  rm -f "$lock_path" 2>/dev/null || true
-  if : > "$lock_path" 2>/dev/null; then
+  for attempt in 1 2 3 4 5; do
     rm -f "$lock_path" 2>/dev/null || true
-    return 0
-  fi
+    if probe_err=$({ : > "$lock_path"; } 2>&1); then
+      rm -f "$lock_path" 2>/dev/null || true
+      return 0
+    fi
 
-  chmod u+w "$git_dir" "$index_path" 2>/dev/null || true
-  if : > "$lock_path" 2>/dev/null; then
-    rm -f "$lock_path" 2>/dev/null || true
-    return 0
-  fi
+    chmod u+w "$git_dir" "$index_path" 2>/dev/null || true
+    if probe_err=$({ : > "$lock_path"; } 2>&1); then
+      rm -f "$lock_path" 2>/dev/null || true
+      return 0
+    fi
 
+    if [ "$attempt" -lt 5 ]; then
+      existing_lock=""
+      if [ -e "$lock_path" ]; then
+        existing_lock=" (existing lock present)"
+      fi
+      printf 'ralph: ensure_git_index_writable: probe attempt %d/5 failed%s: %s\n' \
+        "$attempt" "$existing_lock" "$probe_err" >&2
+      sleep 1
+    fi
+  done
+
+  printf 'ralph: ensure_git_index_writable: GIVING UP after 5 attempts: %s\n' "$probe_err" >&2
+  printf 'ralph: ensure_git_index_writable:   git_dir=%s\n' "$git_dir" >&2
+  printf 'ralph: ensure_git_index_writable:   index=%s perms=%s\n' \
+    "$index_path" "$(ls -ld "$index_path" 2>/dev/null || echo missing)" >&2
+  printf 'ralph: ensure_git_index_writable:   lock=%s perms=%s\n' \
+    "$lock_path" "$(ls -ld "$lock_path" 2>/dev/null || echo absent)" >&2
   return 1
 }
 

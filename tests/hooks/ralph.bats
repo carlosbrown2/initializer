@@ -17,6 +17,12 @@
 #     (naive head -1 would return the active bead itself — a no-op update
 #     instead of re-opening the real prerequisite)
 
+# `run --separate-stderr` (used by the GIT_INDEX_UNWRITABLE auto_land_bead
+# test) requires bats >= 1.5.0; declaring the minimum silences the BW02
+# warning from older runs and turns a wrong bats into a hard failure
+# instead of a silently-merged stdout/stderr that masks regressions.
+bats_require_minimum_version 1.5.0
+
 setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
   # shellcheck source=/dev/null
@@ -937,7 +943,12 @@ EOF
   /bin/chmod 0555 "$TMPDIR_TEST/repo/.git"
   /bin/chmod 0444 "$TMPDIR_TEST/repo/.git/index"
 
-  run auto_land_bead "$TMPDIR_TEST/repo" "agent-template-bx8"
+  # --separate-stderr: ensure_git_index_writable now emits diagnostic
+  # context to stderr (probe attempts, final permissions snapshot) so
+  # operators can see *why* git can't be written; the machine-readable
+  # token stays on stdout for callers like handle_post_bead_done_routing
+  # that route on it.
+  run --separate-stderr auto_land_bead "$TMPDIR_TEST/repo" "agent-template-bx8"
   [ "$status" -ne 0 ]
   [ "$output" = "GIT_INDEX_UNWRITABLE" ]
 }
