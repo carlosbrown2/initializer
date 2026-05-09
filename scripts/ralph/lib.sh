@@ -139,14 +139,16 @@ business_mode_check() {
 # read-only index state first when that is enough to restore progress.
 #
 # This is intentionally more aggressive than a bare permission probe:
-# 1. remove any stale lock file
-# 2. try a create/remove probe
-# 3. if that fails, chmod the git dir and index file writable and retry
-# 4. retry the whole sequence a few times with brief sleeps to ride out
-#    transient locks held by a sibling process that is still tearing down
-#    (e.g., codex's sandboxed git child after `codex exec` returns control
-#    to ralph.sh — auto_land_bead runs immediately after, and the lockfile
-#    can briefly outlive the codex exit on macOS)
+# 1. resolve git_dir / index / index.lock
+# 2. remove any stale lock file
+# 3. try a create/remove probe
+# 4. if that fails, chmod the git dir and index file writable and retry
+# 5. retry the whole sequence a few times with brief sleeps to ride out
+#    transient failures anywhere in the post-codex boundary, including the
+#    git-path resolution itself (the 2026-05-09 diagnostic failed at
+#    `git rev-parse --git-dir` before the lock probe ran) plus sibling
+#    processes still tearing down after `codex exec` returns control to
+#    ralph.sh.
 #
 # Diagnostic output goes to stderr on every failure AND is persisted to
 # ${repo_root}/.last-landing-diagnostic so it survives a lost terminal
@@ -186,30 +188,45 @@ ensure_git_index_writable() {
     diagnostic_buf+="$line"$'\n'
   }
 
-  git_dir=$(git -C "$repo_root" rev-parse --git-dir 2>/dev/null) || {
-    _ralph_index_diag "ralph: ensure_git_index_writable: git rev-parse --git-dir failed in $repo_root"
-    printf '%s' "$diagnostic_buf" > "$diagnostic_path" 2>/dev/null || true
-    unset -f _ralph_index_diag
-    return 1
-  }
-  index_path=$(git -C "$repo_root" rev-parse --git-path index 2>/dev/null) || {
-    _ralph_index_diag "ralph: ensure_git_index_writable: git rev-parse --git-path index failed in $repo_root"
-    printf '%s' "$diagnostic_buf" > "$diagnostic_path" 2>/dev/null || true
-    unset -f _ralph_index_diag
-    return 1
-  }
-  lock_path=$(git -C "$repo_root" rev-parse --git-path index.lock 2>/dev/null) || {
-    _ralph_index_diag "ralph: ensure_git_index_writable: git rev-parse --git-path index.lock failed in $repo_root"
-    printf '%s' "$diagnostic_buf" > "$diagnostic_path" 2>/dev/null || true
-    unset -f _ralph_index_diag
-    return 1
-  }
-
-  [[ "$git_dir" = /* ]] || git_dir="$repo_root/$git_dir"
-  [[ "$index_path" = /* ]] || index_path="$repo_root/$index_path"
-  [[ "$lock_path" = /* ]] || lock_path="$repo_root/$lock_path"
-
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if ! git_dir=$(git -C "$repo_root" rev-parse --git-dir 2>&1); then
+      probe_err="git rev-parse --git-dir failed in $repo_root: $git_dir"
+      git_dir=""
+      index_path=""
+      lock_path=""
+      if [ "$attempt" -lt "$max_attempts" ]; then
+        _ralph_index_diag "ralph: ensure_git_index_writable: probe attempt $attempt/$max_attempts failed: $probe_err"
+        [ "$sleep_seconds" -gt 0 ] && sleep "$sleep_seconds"
+        continue
+      fi
+      break
+    fi
+    if ! index_path=$(git -C "$repo_root" rev-parse --git-path index 2>&1); then
+      probe_err="git rev-parse --git-path index failed in $repo_root: $index_path"
+      index_path=""
+      lock_path=""
+      if [ "$attempt" -lt "$max_attempts" ]; then
+        _ralph_index_diag "ralph: ensure_git_index_writable: probe attempt $attempt/$max_attempts failed: $probe_err"
+        [ "$sleep_seconds" -gt 0 ] && sleep "$sleep_seconds"
+        continue
+      fi
+      break
+    fi
+    if ! lock_path=$(git -C "$repo_root" rev-parse --git-path index.lock 2>&1); then
+      probe_err="git rev-parse --git-path index.lock failed in $repo_root: $lock_path"
+      lock_path=""
+      if [ "$attempt" -lt "$max_attempts" ]; then
+        _ralph_index_diag "ralph: ensure_git_index_writable: probe attempt $attempt/$max_attempts failed: $probe_err"
+        [ "$sleep_seconds" -gt 0 ] && sleep "$sleep_seconds"
+        continue
+      fi
+      break
+    fi
+
+    [[ "$git_dir" = /* ]] || git_dir="$repo_root/$git_dir"
+    [[ "$index_path" = /* ]] || index_path="$repo_root/$index_path"
+    [[ "$lock_path" = /* ]] || lock_path="$repo_root/$lock_path"
+
     rm -f "$lock_path" 2>/dev/null || true
     if probe_err=$({ : > "$lock_path"; } 2>&1); then
       rm -f "$lock_path" 2>/dev/null || true

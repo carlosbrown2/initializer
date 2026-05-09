@@ -278,6 +278,75 @@ EOF
   [[ "$diagnostic" == *"index=$TMPDIR_TEST/repo/.git/index"* ]]
 }
 
+@test "ensure_git_index_writable: retries a transient rev-parse failure before probing again" {
+  mkdir -p "$TMPDIR_TEST/repo/.git" "$TMPDIR_TEST/bin"
+  : > "$TMPDIR_TEST/repo/.git/index"
+  cat > "$TMPDIR_TEST/bin/git" <<EOF
+#!/bin/bash
+state_file="$TMPDIR_TEST/git-rev-parse-count"
+count=0
+if [ -f "\$state_file" ]; then
+  count=\$(cat "\$state_file")
+fi
+count=\$((count + 1))
+printf '%s\n' "\$count" > "\$state_file"
+if [ "\$1" = "-C" ]; then
+  shift 2
+fi
+if [ "\$1 \$2" = "rev-parse --git-dir" ] && [ "\$count" -eq 1 ]; then
+  printf '%s\n' 'fatal: transient teardown race' >&2
+  exit 1
+fi
+if [ "\$1 \$2" = "rev-parse --git-dir" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index"
+  exit 0
+fi
+if [ "\$1 \$2 \$3" = "rev-parse --git-path index.lock" ]; then
+  printf '%s\n' "$TMPDIR_TEST/repo/.git/index.lock"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/git"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  _RALPH_INDEX_PROBE_ATTEMPTS=2 _RALPH_INDEX_PROBE_SLEEP=0 \
+    run ensure_git_index_writable "$TMPDIR_TEST/repo"
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMPDIR_TEST/repo/.last-landing-diagnostic" ]
+  [ ! -e "$TMPDIR_TEST/repo/.git/index.lock" ]
+}
+
+@test "ensure_git_index_writable: persists rev-parse stderr when git-dir resolution never recovers" {
+  mkdir -p "$TMPDIR_TEST/repo" "$TMPDIR_TEST/bin"
+  cat > "$TMPDIR_TEST/bin/git" <<'EOF'
+#!/bin/bash
+if [ "$1" = "-C" ]; then
+  shift 2
+fi
+if [ "$1 $2" = "rev-parse --git-dir" ]; then
+  printf '%s\n' 'fatal: git metadata temporarily unavailable' >&2
+  exit 1
+fi
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/bin/git"
+  PATH="$TMPDIR_TEST/bin:$PATH"
+
+  _RALPH_INDEX_PROBE_ATTEMPTS=2 _RALPH_INDEX_PROBE_SLEEP=0 \
+    run ensure_git_index_writable "$TMPDIR_TEST/repo"
+  [ "$status" -ne 0 ]
+  [ -f "$TMPDIR_TEST/repo/.last-landing-diagnostic" ]
+  diagnostic=$(cat "$TMPDIR_TEST/repo/.last-landing-diagnostic")
+  [[ "$diagnostic" == *"probe attempt 1/2 failed: git rev-parse --git-dir failed"* ]]
+  [[ "$diagnostic" == *"fatal: git metadata temporarily unavailable"* ]]
+  [[ "$diagnostic" == *"GIVING UP after 2 attempts: git rev-parse --git-dir failed"* ]]
+}
+
 @test "git_worktree_status: prints porcelain output for dirty files" {
   mkdir -p "$TMPDIR_TEST/repo"
   git -C "$TMPDIR_TEST/repo" init -q

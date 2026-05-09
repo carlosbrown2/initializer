@@ -1524,3 +1524,21 @@ Started: Tue Apr 21 12:26:09 MDT 2026
   - The override contract is safer when both the parser branch and the generated hook behavior are pinned separately.
   - This policy was already in comments and the decision register; the missing piece was executable coverage for the `command -v bd` short-circuit.
 ---
+## 2026-05-09 14:59 - agent-template-aos
+- Type: impl
+- What was done
+- Investigated the Codex-only landing failure and used the fresh `2026-05-09 11:31:12` `.last-landing-diagnostic` as the deciding evidence: this run failed at `git rev-parse --git-dir`, not at `: > .git/index.lock`, so the retry budget was guarding the wrong boundary.
+- Tightened `scripts/ralph/lib.sh` so `ensure_git_index_writable` now retries the full post-Codex probe (`rev-parse --git-dir`, `rev-parse --git-path index`, `rev-parse --git-path index.lock`, stale-lock cleanup, optional `chmod u+w`, then the lock-create probe) and preserves rev-parse stderr in `.last-landing-diagnostic` when the race persists.
+- Added regression coverage for both the recovered transient `rev-parse` failure and the persistent `rev-parse` failure that must leave actionable stderr in `.last-landing-diagnostic`, then re-ran the full verification gate successfully.
+- Files changed
+- .beads/issues.jsonl
+- docs/failure-modes.md
+- scripts/ralph/archive.txt
+- scripts/ralph/lib.sh
+- tests/hooks/ralph.bats
+- Register updates: [failure-modes rows added: 0 | decision rows added: 0]
+- **Learnings for future iterations:**
+  - A post-agent retry barrier has to cover git metadata resolution, not just `.git/index.lock` creation; otherwise a transient teardown race is misreported as a permanent index permission failure.
+  - Persisting the exact stderr from `git rev-parse` matters because `GIT_INDEX_UNWRITABLE` alone does not distinguish a true EPERM from a boundary race that will clear on retry.
+  - The narrow fix here is option B, not option A: expand the post-Codex barrier around the full landing probe instead of giving the agent broader filesystem permissions.
+---
