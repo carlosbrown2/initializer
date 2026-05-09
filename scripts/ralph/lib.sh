@@ -57,6 +57,84 @@ tracker_has_unfinished_beads() {
   return 1
 }
 
+# Validate the committed bootstrap-to-business switch artifact.
+#
+# The template ships a repo-specific `docs/business-mode.json` file that
+# records the project root name, the commit visible when the switch was
+# approved, the chosen auto-land policy, installed local scanners, and the
+# retirement of bootstrap-only scanner overrides. Ralph refuses to start
+# Phase 3 work unless that artifact exists and matches the current repo
+# state. The repo-specific commit anchor is what forces downstream projects
+# bootstrapped from this template to re-record the switch: template files
+# copy, but template git history does not, so the inherited commit id will
+# not resolve in the new repo until the operator replaces it deliberately.
+business_mode_check() {
+  local repo_root="$1"
+  local artifact_path="${2:-$repo_root/docs/business-mode.json}"
+  local claude_path="$repo_root/CLAUDE.md"
+  local repo_basename policy project_root_basename switch_commit
+  local bootstrap_override_retired gitleaks dep_hallucinator
+
+  if [ ! -f "$artifact_path" ]; then
+    echo "Missing business-mode artifact: $artifact_path"
+    return 1
+  fi
+
+  if ! jq -e 'type == "object"' "$artifact_path" >/dev/null 2>&1; then
+    echo "Business-mode artifact is not valid JSON object: $artifact_path"
+    return 1
+  fi
+
+  repo_basename=$(basename "$repo_root")
+  project_root_basename=$(jq -r '.project_root_basename // empty' "$artifact_path" 2>/dev/null) || {
+    echo "Business-mode artifact is missing project_root_basename"
+    return 1
+  }
+  if [ "$project_root_basename" != "$repo_basename" ]; then
+    echo "Business-mode artifact project_root_basename=$project_root_basename does not match repo root $repo_basename"
+    return 1
+  fi
+
+  switch_commit=$(jq -r '.switch_commit // empty' "$artifact_path" 2>/dev/null) || {
+    echo "Business-mode artifact is missing switch_commit"
+    return 1
+  }
+  if [ -z "$switch_commit" ]; then
+    echo "Business-mode artifact is missing switch_commit"
+    return 1
+  fi
+  if ! git -C "$repo_root" cat-file -e "${switch_commit}^{commit}" 2>/dev/null; then
+    echo "Business-mode artifact switch_commit=$switch_commit is not present in this repo history"
+    return 1
+  fi
+
+  policy=$(read_auto_land_policy "$claude_path")
+  if [ "$policy" != "high" ] && [ "$policy" != "none" ]; then
+    echo "Business mode requires auto-land: high or auto-land: none; CLAUDE.md currently resolves to $policy"
+    return 1
+  fi
+
+  if ! jq -e --arg policy "$policy" '.auto_land_policy == $policy' "$artifact_path" >/dev/null 2>&1; then
+    echo "Business-mode artifact auto_land_policy does not match CLAUDE.md ($policy)"
+    return 1
+  fi
+
+  bootstrap_override_retired=$(jq -r '.bootstrap_override_retired // empty' "$artifact_path" 2>/dev/null)
+  gitleaks=$(jq -r '.local_scanners.gitleaks // empty' "$artifact_path" 2>/dev/null)
+  dep_hallucinator=$(jq -r '.local_scanners.dep_hallucinator // empty' "$artifact_path" 2>/dev/null)
+
+  if [ "$bootstrap_override_retired" != "true" ]; then
+    echo "Business-mode artifact must record bootstrap_override_retired=true"
+    return 1
+  fi
+  if [ "$gitleaks" != "true" ] || [ "$dep_hallucinator" != "true" ]; then
+    echo "Business-mode artifact must record local_scanners.gitleaks=true and local_scanners.dep_hallucinator=true"
+    return 1
+  fi
+
+  return 0
+}
+
 # Return 0 when the repo can create `.git/index.lock`, repairing stale or
 # read-only index state first when that is enough to restore progress.
 #

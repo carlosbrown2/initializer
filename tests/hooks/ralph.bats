@@ -103,6 +103,54 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+# --- business_mode_check -------------------------------------------------
+
+@test "business_mode_check: accepts the real repo artifact" {
+  run business_mode_check "$PROJECT_ROOT"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "business_mode_check: rejects missing switch artifact" {
+  mkdir -p "$TMPDIR_TEST/repo/docs"
+  git -C "$TMPDIR_TEST/repo" init -q
+  cat > "$TMPDIR_TEST/repo/CLAUDE.md" <<'EOF'
+## Confidence Routing
+
+auto-land: high
+EOF
+
+  run business_mode_check "$TMPDIR_TEST/repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Missing business-mode artifact"* ]]
+}
+
+@test "business_mode_check: rejects inherited artifact whose switch commit is absent from repo history" {
+  mkdir -p "$TMPDIR_TEST/repo/docs"
+  git -C "$TMPDIR_TEST/repo" init -q
+  cat > "$TMPDIR_TEST/repo/CLAUDE.md" <<'EOF'
+## Confidence Routing
+
+auto-land: high
+EOF
+  cat > "$TMPDIR_TEST/repo/docs/business-mode.json" <<'EOF'
+{
+  "project_root_basename": "repo",
+  "switch_commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+  "auto_land_policy": "high",
+  "local_scanners": {
+    "gitleaks": true,
+    "dep_hallucinator": true
+  },
+  "bootstrap_override_retired": true
+}
+EOF
+
+  run business_mode_check "$TMPDIR_TEST/repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"switch_commit=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef is not present in this repo history"* ]]
+}
+
 # --- ensure_git_index_writable -------------------------------------------
 
 @test "ensure_git_index_writable: repairs a writable repo after a stale lock" {
@@ -302,6 +350,66 @@ EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"Error: worktree is dirty but no bead is in progress."* ]]
   [[ "$output" == *"local-only.txt"* ]]
+  [[ "$output" != *"codex should not run"* ]]
+}
+
+@test "ralph.sh stops before starting a bead when business-mode artifact is missing" {
+  TEST_REPO="$TMPDIR_TEST/repo"
+  BIN_DIR="$TMPDIR_TEST/bin"
+  mkdir -p "$TEST_REPO/scripts/ralph" "$TEST_REPO/scripts/hooks" "$BIN_DIR"
+
+  cp "$PROJECT_ROOT/scripts/ralph/ralph.sh" "$TEST_REPO/scripts/ralph/ralph.sh"
+  cp "$PROJECT_ROOT/scripts/ralph/lib.sh" "$TEST_REPO/scripts/ralph/lib.sh"
+  cp "$PROJECT_ROOT/scripts/ralph/prompt.md" "$TEST_REPO/scripts/ralph/prompt.md"
+  cp "$PROJECT_ROOT/scripts/hooks/parsers.sh" "$TEST_REPO/scripts/hooks/parsers.sh"
+
+  git -C "$TEST_REPO" init -q
+  git -C "$TEST_REPO" config user.email test@example.com
+  git -C "$TEST_REPO" config user.name "Test User"
+
+  cat > "$TEST_REPO/CLAUDE.md" <<'EOF'
+# Scratch Project
+
+## Verification Gate
+
+```
+true
+```
+
+## Confidence Routing
+
+auto-land: high
+EOF
+
+  cat > "$BIN_DIR/bd" <<'EOF'
+#!/bin/bash
+if [ "$1" = "list" ] && [ "$2" = "--status=in_progress" ] && [ "$3" = "--json" ]; then
+  printf '[]\n'
+  exit 0
+fi
+if [ "$1" = "ready" ] && [ "$2" = "--json" ]; then
+  printf '[{"id":"agent-template-next"}]\n'
+  exit 0
+fi
+echo "unexpected bd invocation: $*" >&2
+exit 1
+EOF
+  chmod +x "$BIN_DIR/bd"
+
+  cat > "$BIN_DIR/codex" <<'EOF'
+#!/bin/bash
+echo "codex should not run" >&2
+exit 99
+EOF
+  chmod +x "$BIN_DIR/codex"
+
+  git -C "$TEST_REPO" add CLAUDE.md scripts/ralph/ralph.sh scripts/ralph/lib.sh scripts/ralph/prompt.md scripts/hooks/parsers.sh
+  git -C "$TEST_REPO" commit -q -m "init"
+
+  run bash -c 'PATH="$1:$PATH" source "$2" 1' bash "$BIN_DIR" "$TEST_REPO/scripts/ralph/ralph.sh"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Error: business-mode preflight failed."* ]]
+  [[ "$output" == *"Missing business-mode artifact"* ]]
   [[ "$output" != *"codex should not run"* ]]
 }
 
@@ -563,6 +671,18 @@ EOF
 
 @test "project kickoff prompt requires a business-mode switch before Phase 3" {
   run grep -F "You have explicitly approved the switch from bootstrap mode to business mode. Phase 3 does not begin until that approval exists." \
+    "$PROJECT_ROOT/project-kickoff-prompt.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "README points Phase 3 at docs/business-mode.json" {
+  run grep -F 'record the bootstrap-to-business switch in `docs/business-mode.json`' \
+    "$PROJECT_ROOT/README.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "project kickoff prompt requires docs/business-mode.json before Phase 3" {
+  run grep -F '`docs/business-mode.json` exists, is repo-specific, and records the approved switch' \
     "$PROJECT_ROOT/project-kickoff-prompt.md"
   [ "$status" -eq 0 ]
 }

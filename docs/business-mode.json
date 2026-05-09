@@ -1,0 +1,10 @@
+{
+  "project_root_basename": "agent-template",
+  "switch_commit": "e4c6cfa3f0f5f23eb4bd9c2caeadf41780c5298b",
+  "auto_land_policy": "high",
+  "local_scanners": {
+    "gitleaks": true,
+    "dep_hallucinator": true
+  },
+  "bootstrap_override_retired": true
+}

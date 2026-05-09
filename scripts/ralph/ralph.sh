@@ -307,6 +307,13 @@ if ! ensure_git_index_writable "$_RALPH_PROJECT_ROOT"; then
   return 1
 fi
 
+if ! business_mode_check "$_RALPH_PROJECT_ROOT"; then
+  echo "Error: business-mode preflight failed."
+  echo "  Phase 3 stays closed until docs/business-mode.json records this repo's switch."
+  _ralph_cleanup
+  return 1
+fi
+
 # Retry tracking
 _RALPH_FAIL_COUNT=0
 _RALPH_LAST_FAILED_BEAD=""

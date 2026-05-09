@@ -73,7 +73,7 @@ Each row must be a single line — multi-line visual continuations are not parse
 | Pattern extraction        | compound beads            | every promoted pattern carries a `model:` tag and a retire-on-upgrade rule        | CLAUDE.md model-tag validator hook                                                | bounded          |
 | Decomposition             | Phase 2                   | phase-labeled work encodes execution order in explicit `bd` dependency edges so `bd ready` can only surface a sensible starting set | pre-commit bead-graph phase-order guard in scripts/hooks/install.sh + human dep-graph review at Phase 2 | bounded          |
 | Tool / search choice      | execution                 | unconstrained — model picks                                                       | none (rationale: search strategy is exactly where we want model freedom)          | agent-discretion |
-| Bootstrap-to-business transition | between Phase 2 and Phase 3 | a project may enter normal implementation only after a deliberate mode switch that records business-mode expectations: `auto-land: high` (or stricter), installed local scanners, and no reliance on bootstrap-only overrides | Phase 2 approval checklist; re-validate before the first Ralph-run bead and any time local scanner requirements change | ritual-bounded   |
+| Bootstrap-to-business transition | between Phase 2 and Phase 3 | a project may enter normal implementation only after a deliberate mode switch recorded in `docs/business-mode.json`: repo-specific root name, switch commit from the current repo history, `auto-land: high` (or stricter), installed local scanners, and no reliance on bootstrap-only overrides | scripts/ralph/lib.sh `business_mode_check` validates the artifact before Ralph starts; tests/hooks/ralph.bats pins the live repo artifact and the failure path when the artifact is missing | bounded   |
 | Model upgrade drift       | model swap                | every promoted pattern tagged with source model; retire unless re-validated       | upgrade ritual: re-run both registers under the new model before resuming         | ritual-bounded   |
 | Scope creep               | every commit              | `.current-bead-scope` declares allowed paths; infrastructure paths always allowed | scope enforcement hook                                                            | bounded          |
 | Artifact format           | review / research beads   | review artifacts cite the rubric and contain a severity clause                    | review-bead contract in scripts/ralph/prompt.md; human read of docs/reviews/<bead-id>.md | ritual-bounded   |
@@ -141,6 +141,7 @@ Done when **all** of the following hold and I have approved the bead graph:
 - Cross-cutting checks that span multiple stories (e.g., a single property-test file covering invariants from several modules) get their own bead with its own quartet.
 - The project has a written business-mode switch checklist covering: chosen `auto-land:` policy, required local scanners, hook installation, and any bootstrap-only exemptions that must now be forbidden.
 - You have explicitly approved the switch from bootstrap mode to business mode. Phase 3 does not begin until that approval exists.
+- `docs/business-mode.json` exists, is repo-specific, and records the approved switch.
 
 Each story decomposes into the **quartet**: `impl → review → pare-down → compound`. The four passes are kept structural — at worst they are redundant, at best they catch what a single-pass review would miss. Chain each quartet with `bd dep add`.
 
@@ -156,6 +157,7 @@ This phase runs in **business mode**, not bootstrap mode. Before the first imple
 - `CLAUDE.md` must declare `auto-land: high` or a stricter policy.
 - Local scanners required by the hooks (`gitleaks`, `dep-hallucinator`) must be installed on the working machine.
 - No commit path may still depend on `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1`.
+- `docs/business-mode.json` must record the approved switch using this repo's own root name and a commit that exists in this repo's history, so a downstream project cannot inherit the template's Phase 3 approval by accident.
 
 Done when every bead is closed and **all** of the following hold for every commit:
 
@@ -232,6 +234,6 @@ The gate is enforced at **two points**: (1) `ralph.sh` runs the gate itself on B
 - **Methodology is yours to choose.** If you find a stronger technique than what's in `docs/skills/backpressure-catalog.md`, use it and update the catalog. Do not feel constrained by what previous projects used.
 - **When a rule starts mattering, encode it.** If you find yourself reminding the agent of a rule in prose, that rule should become a hook, a test, a schema, or a type. Promote, don't repeat.
 - **Confidence is bash-derived, not self-reported.** `compute_confidence` (`scripts/ralph/lib.sh`) maps the bash-observed gate result to HIGH or LOW; the agent emits no confidence tag. Routing happens in `ralph.sh`.
-- **Make the bootstrap-to-business switch explicit.** Before normal implementation begins, state that the project has entered business mode, confirm the `auto-land:` policy, and confirm the required local scanners are installed. If that transition is not true yet, stay in bootstrap mode and keep Phase 3 closed.
+- **Make the bootstrap-to-business switch explicit.** Before normal implementation begins, record the project entering business mode in `docs/business-mode.json`, confirm the `auto-land:` policy, and confirm the required local scanners are installed. If that transition is not true yet, stay in bootstrap mode and keep Phase 3 closed.
 - **Tag patterns with the model that wrote them.** Every entry under `CLAUDE.md ## Discovered Patterns` carries a `model:` tag. On model upgrade, every tagged pattern is re-validated or retired. This bounds "model upgrade drift" in the decision register.
 - **Structural over verbal at every layer.** This document is the smallest possible set of contracts. Anything you'd want to add to it should probably be a hook instead.

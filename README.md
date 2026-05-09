@@ -23,7 +23,7 @@ Initializer intentionally separates **bootstrap mode** from **business mode**.
 - **Bootstrap mode** is the short setup period before normal implementation starts. It covers installing hooks, creating the registers, shaping beads, and other first-session scaffolding. The only relaxed behavior is the explicit bootstrap-only scanner override: `BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1`, and only while no bead is in progress.
 - **Business mode** is the normal operating posture for actual feature work. In business mode, the shipped default remains `auto-land: high`, local scanners (`gitleaks`, `dep-hallucinator`) are installed, and commits no longer rely on bootstrap-only exemptions.
 
-The kickoff flow is expected to make that transition explicit before the Ralph loop starts. This keeps "we're still setting up" from silently becoming "we're shipping work under a looser posture than intended."
+The kickoff flow is expected to make that transition explicit before the Ralph loop starts. This keeps "we're still setting up" from silently becoming "we're shipping work under a looser posture than intended." To make that switch falsifiable instead of purely verbal, record the bootstrap-to-business switch in `docs/business-mode.json`: the repo-specific root name, the commit visible when the switch was approved, the chosen `auto-land:` policy, scanner installation, and retirement of bootstrap-only overrides. `scripts/ralph/lib.sh` validates that artifact before Ralph starts Phase 3 work.
 
 ### The two registers (mechanical backbone)
 
@@ -89,7 +89,7 @@ The initializer walks you through 5 phases. Each phase is an outcome contract â€
    ```
 
 3. Direct your agent to walk through `project-kickoff-prompt.md`. It guides the agent through the full workflow: spec (PRD), beads, implementation, and review.
-   Before implementation begins, have it record the bootstrap-to-business switch explicitly: confirm `auto-land: high` (or stricter), confirm local scanners are installed, and confirm bootstrap-only overrides are no longer in play.
+   Before implementation begins, have it record the bootstrap-to-business switch in `docs/business-mode.json`: confirm `auto-land: high` (or stricter), confirm local scanners are installed, confirm bootstrap-only overrides are no longer in play, and anchor the approval to a commit that exists in the new repo's own history.
 
 ## The Ralph Loop
 
