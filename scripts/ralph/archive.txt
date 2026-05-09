@@ -1506,6 +1506,21 @@ Started: Tue Apr 21 12:26:09 MDT 2026
 - Register updates: none
 - **Learnings for future iterations:**
   - A committed repo-specific artifact is a stronger business-mode boundary than prose because template files copy but template git history does not.
-  - Validating the switch commit against local git history forces downstream projects to re-record the transition instead of inheriting the template's approval by accident.
-  - Putting the check in Ralph preflight keeps Phase 3 closed mechanically without adding another pre-commit hook to the small-set harness.
+- Validating the switch commit against local git history forces downstream projects to re-record the transition instead of inheriting the template's approval by accident.
+- Putting the check in Ralph preflight keeps Phase 3 closed mechanically without adding another pre-commit hook to the small-set harness.
+---
+## 2026-05-09 11:27 - agent-template-zh2
+- Type: impl
+- What was done
+- Pinned the `bd`-unavailable branch in `bd_bead_in_progress` as an explicit bootstrap no-bead case and clarified that bootstrap-only scanner overrides remain eligible on that path.
+- Added parser and generated-hook coverage proving that an absent `bd` binary returns an empty in-progress bead result and still permits the explicit bootstrap scanner override while both local scanners are missing.
+- Files changed
+- scripts/hooks/parsers.sh
+- tests/hooks/generated_hooks_e2e.bats
+- tests/hooks/parsers.bats
+- Register updates: none
+- **Learnings for future iterations:**
+  - Distinguish `bd missing` from `bd broken`: the first is the allowed bootstrap path, the second must still fail closed.
+  - The override contract is safer when both the parser branch and the generated hook behavior are pinned separately.
+  - This policy was already in comments and the decision register; the missing piece was executable coverage for the `command -v bd` short-circuit.
 ---
