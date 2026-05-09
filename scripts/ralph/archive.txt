@@ -1487,3 +1487,25 @@ Started: Tue Apr 21 12:26:09 MDT 2026
   - The scanner-override design is mechanically pinned and green; the next successful session should only need installed `gitleaks` and `dep-hallucinator` plus normal close/commit flow.
   - Clearing the bead marker files before blocking keeps the repo state aligned with the environment failure rather than leaving a stale in-progress marker behind.
 ---
+## 2026-05-08 21:16 - agent-template-8jv
+- Type: impl
+- What was done
+- Added a committed `docs/business-mode.json` artifact plus `scripts/ralph/lib.sh` `business_mode_check`, then wired `scripts/ralph/ralph.sh` to fail closed before Phase 3 work if the artifact is missing, inherited from another repo, mismatched with `CLAUDE.md` policy, or missing scanner / override-retirement confirmations.
+- Updated the README, kickoff prompt, and both registers so the bootstrap-to-business switch is now described as a repo-specific artifact contract instead of a wording-only checklist; extended `tests/hooks/ralph.bats` to cover the live artifact, missing-artifact rejection, inherited-artifact rejection, and the Ralph preflight stop.
+- Files changed
+- .beads/issues.jsonl
+- README.md
+- docs/business-mode.json
+- docs/decision-register.md
+- docs/failure-modes.md
+- project-kickoff-prompt.md
+- scripts/ralph/archive.txt
+- scripts/ralph/lib.sh
+- scripts/ralph/ralph.sh
+- tests/hooks/ralph.bats
+- Register updates: none
+- **Learnings for future iterations:**
+  - A committed repo-specific artifact is a stronger business-mode boundary than prose because template files copy but template git history does not.
+  - Validating the switch commit against local git history forces downstream projects to re-record the transition instead of inheriting the template's approval by accident.
+  - Putting the check in Ralph preflight keeps Phase 3 closed mechanically without adding another pre-commit hook to the small-set harness.
+---
