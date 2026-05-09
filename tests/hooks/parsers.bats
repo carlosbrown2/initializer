@@ -40,6 +40,17 @@ EOF
   chmod +x "$BIN_DIR/bd"
 }
 
+# --- bd_bead_in_progress -------------------------------------------------
+
+@test "bd_bead_in_progress: missing bd is treated as bootstrap no-bead" {
+  PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+  export PATH
+
+  run bd_bead_in_progress
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 # --- bead_phase_dependency_check ------------------------------------------
 
 @test "bead_phase_dependency_check: accepts review with impl dep, pare with review dep, compound with review dep" {

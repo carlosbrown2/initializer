@@ -19,10 +19,12 @@ PARSERS_BEAD_ID_REGEX='[a-z][-a-z0-9]*-[a-z0-9]{2,}'
 #
 # Print the id of the currently in-progress bead (if any), or empty if none.
 # Returns 0 on success (including the no-bead case), 1 if `bd` itself
-# failed or returned non-parseable JSON. Callers in a fail-closed chain
-# should check the exit code and BLOCK on non-zero, not just an empty
-# stdout — otherwise a silent `bd` failure bypasses the entire gate chain
-# that conditions on "is a bead in progress?"
+# failed or returned non-parseable JSON. An absent `bd` binary is treated
+# as the explicit Phase 1 bootstrap case: stdout stays empty, callers see
+# "no active bead", and bootstrap-only scanner overrides may still apply.
+# Callers in a fail-closed chain should check the exit code and BLOCK on
+# non-zero, not just an empty stdout — otherwise a silent `bd` failure
+# bypasses the entire gate chain that conditions on "is a bead in progress?"
 #
 # Uses --no-daemon + --json throughout so a change in `bd list`'s human-readable TUI
 # format cannot silently flip the extraction result. install.sh and

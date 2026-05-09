@@ -198,6 +198,17 @@ set_mock_graph_issue() {
   [[ "$output" == *"WARNING: dep-hallucinator is not installed, but BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1"* ]]
 }
 
+@test "generated pre-commit permits explicit bootstrap override when bd is unavailable" {
+  rm "$BIN_DIR/bd" "$BIN_DIR/gitleaks" "$BIN_DIR/dep-hallucinator"
+  printf '{"dependencies":{"left-pad":"1.3.0"}}\n' > "$TEST_REPO/package.json"
+  git -C "$TEST_REPO" add package.json
+
+  run git_commit_with_bootstrap_override "chore: add package manifest"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WARNING: gitleaks is not installed, but BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1"* ]]
+  [[ "$output" == *"WARNING: dep-hallucinator is not installed, but BOOTSTRAP_ALLOW_MISSING_LOCAL_SECURITY_SCANNERS=1"* ]]
+}
+
 @test "generated pre-commit ignores bootstrap override once a bead is in progress" {
   set_in_progress_bead impl
   printf 'allowed.txt\n' > "$TEST_REPO/.current-bead-scope"
