@@ -55,3 +55,13 @@ auto-land: high
 ## Discovered Patterns
 
 Project-specific patterns the agent surfaces during work land here under `### <title>` entries with `model:` tags and a binding artifact citation (path::symbol, `tests/...` reference, or a register row).
+
+### Record mode switches as repo state, not prose alone
+model: gpt-5
+
+If a project phase transition changes landing policy or guard posture, require a checked-in artifact that the runtime reads before work can continue. Wording tests on README or prompt text are not enough to prove the transition happened in the current repo. Binding artifacts: `scripts/ralph/lib.sh::business_mode_check`, `docs/business-mode.json`, `tests/hooks/ralph.bats`.
+
+### Pin fallback branches at control boundaries
+model: gpt-5
+
+When a helper decides whether a stricter guard applies, test the error and fallback branches that define the boundary, not just the happy path. In this arc, the durable edge was "`bd` unavailable" deciding whether bootstrap-only scanner relief still exists. Binding artifacts: `scripts/hooks/parsers.sh::bd_bead_in_progress`, `tests/hooks/parsers.bats`, `tests/hooks/generated_hooks_e2e.bats`.

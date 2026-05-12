@@ -1538,7 +1538,24 @@ Started: Tue Apr 21 12:26:09 MDT 2026
 - tests/hooks/ralph.bats
 - Register updates: [failure-modes rows added: 0 | decision rows added: 0]
 - **Learnings for future iterations:**
-  - A post-agent retry barrier has to cover git metadata resolution, not just `.git/index.lock` creation; otherwise a transient teardown race is misreported as a permanent index permission failure.
-  - Persisting the exact stderr from `git rev-parse` matters because `GIT_INDEX_UNWRITABLE` alone does not distinguish a true EPERM from a boundary race that will clear on retry.
-  - The narrow fix here is option B, not option A: expand the post-Codex barrier around the full landing probe instead of giving the agent broader filesystem permissions.
+- A post-agent retry barrier has to cover git metadata resolution, not just `.git/index.lock` creation; otherwise a transient teardown race is misreported as a permanent index permission failure.
+- Persisting the exact stderr from `git rev-parse` matters because `GIT_INDEX_UNWRITABLE` alone does not distinguish a true EPERM from a boundary race that will clear on retry.
+- The narrow fix here is option B, not option A: expand the post-Codex barrier around the full landing probe instead of giving the agent broader filesystem permissions.
+---
+## 2026-05-12 15:42 - agent-template-e6p
+- Type: compound
+- What was done
+- Read the bootstrap-to-business review arc across `agent-template-p8e`, `agent-template-4al`, `agent-template-tw4`, `agent-template-8jv`, and `agent-template-zh2`, then promoted only the durable cross-cutting rules into `CLAUDE.md`.
+- Added two lean business-hardening patterns: mode switches that change enforcement posture must be recorded as repo state and read by runtime checks, and boundary helpers must pin their fallback/error branches rather than only their happy paths.
+- Deleted `docs/reviews/agent-template-tw4.md` because its knowledge is now embedded in durable docs and the two review findings were already converted into implementation beads with mechanical coverage.
+- Files changed
+- .beads/issues.jsonl
+- CLAUDE.md
+- docs/reviews/agent-template-tw4.md
+- scripts/ralph/archive.txt
+- Register updates: none
+- **Learnings for future iterations:**
+  - Keep compound promotions at the rule level, not the bead-history level; the durable content here was two control-boundary rules, not the whole bootstrap/business narrative.
+  - A prose-only transition check is a review smell: if the state matters at runtime, make the repo prove it in data.
+  - Boundary predicates deserve explicit fallback-branch tests because environment absence often defines the real policy edge.
 ---
