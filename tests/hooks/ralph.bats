@@ -347,6 +347,66 @@ EOF
   [[ "$diagnostic" == *"GIVING UP after 2 attempts: git rev-parse --git-dir failed"* ]]
 }
 
+@test "ensure_git_index_writable: PATH-stripped fallback resolves git from a hardcoded location" {
+  # Regression: agent-template-e6p (2026-05-12) failed with
+  #   `command not found: git ... GIVING UP after 10 attempts`
+  # because the function ran in a shell whose PATH did not include
+  # /usr/bin even though /usr/bin/git existed. The fix resolves git via
+  # an explicit fallback list so PATH-stripped contexts still work.
+  mkdir -p "$TMPDIR_TEST/repo" "$TMPDIR_TEST/fallback"
+  cat > "$TMPDIR_TEST/fallback/git" <<EOF
+#!/bin/bash
+if [ "\$1" = "-C" ]; then
+  shift 2
+fi
+case "\$1 \$2" in
+  "rev-parse --git-dir") printf '%s\n' "$TMPDIR_TEST/repo/.git"; exit 0 ;;
+esac
+case "\$1 \$2 \$3" in
+  "rev-parse --git-path index") printf '%s\n' "$TMPDIR_TEST/repo/.git/index"; exit 0 ;;
+  "rev-parse --git-path index.lock") printf '%s\n' "$TMPDIR_TEST/repo/.git/index.lock"; exit 0 ;;
+esac
+exit 1
+EOF
+  chmod +x "$TMPDIR_TEST/fallback/git"
+  mkdir -p "$TMPDIR_TEST/repo/.git"
+  : > "$TMPDIR_TEST/repo/.git/index"
+
+  # Use PATH=/bin so the function still has rm/chmod/ls (which it relies
+  # on for cleanup and diagnostics) without /usr/bin/git on the lookup
+  # path. /bin on macOS and Linux has the core utilities but no git, so
+  # `command -v git` fails and the fallback branch is the only way the
+  # function can resolve a binary.
+  PATH="/bin" _RALPH_GIT_FALLBACK_PATHS="$TMPDIR_TEST/fallback/git" \
+    _RALPH_INDEX_PROBE_ATTEMPTS=1 _RALPH_INDEX_PROBE_SLEEP=0 \
+    run ensure_git_index_writable "$TMPDIR_TEST/repo"
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMPDIR_TEST/repo/.git/index.lock" ]
+  [ ! -e "$TMPDIR_TEST/repo/.last-landing-diagnostic" ]
+}
+
+@test "ensure_git_index_writable: BLOCKED fast-fail when git is not on PATH and no fallback resolves" {
+  # Same regression as above, but for the case where the fallback list is
+  # also empty. The function MUST fail immediately with a single clear
+  # diagnostic instead of burning the full retry budget on a missing
+  # binary (the e6p run wasted 10×2s = 20s with 10 identical lines).
+  mkdir -p "$TMPDIR_TEST/repo"
+
+  PATH="/bin" _RALPH_GIT_FALLBACK_PATHS="" \
+    _RALPH_INDEX_PROBE_ATTEMPTS=10 _RALPH_INDEX_PROBE_SLEEP=2 \
+    run ensure_git_index_writable "$TMPDIR_TEST/repo"
+  [ "$status" -ne 0 ]
+  [ -f "$TMPDIR_TEST/repo/.last-landing-diagnostic" ]
+  diagnostic=$(cat "$TMPDIR_TEST/repo/.last-landing-diagnostic")
+  [[ "$diagnostic" == *"BLOCKED: git binary not on PATH"* ]]
+  # Must NOT have retried — exactly one diagnostic line, no "probe attempt"
+  # or "GIVING UP after" entries.
+  [[ "$diagnostic" != *"probe attempt"* ]]
+  [[ "$diagnostic" != *"GIVING UP after"* ]]
+  line_count=$(wc -l < "$TMPDIR_TEST/repo/.last-landing-diagnostic" | tr -d ' ')
+  [ "$line_count" -eq 1 ]
+}
+
 @test "git_worktree_status: prints porcelain output for dirty files" {
   mkdir -p "$TMPDIR_TEST/repo"
   git -C "$TMPDIR_TEST/repo" init -q

@@ -261,6 +261,21 @@ fi
 
 _RALPH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 _RALPH_PROJECT_ROOT="$(cd "$_RALPH_SCRIPT_DIR/../.." && pwd)"
+
+# Normalize PATH so every git/jq/bd call below resolves even when the caller
+# sourced this script from a shell with a stripped PATH. The 2026-05-12
+# agent-template-e6p failure surfaced as `command not found: git` from inside
+# ensure_git_index_writable because the parent shell's PATH lacked /usr/bin.
+# Append (don't prepend) the standard system bins so the caller's preferred
+# git/jq/bd shadowing still wins; we only fill in gaps.
+for _ralph_sysdir in /usr/local/bin /usr/bin /bin /opt/homebrew/bin; do
+  case ":$PATH:" in
+    *":$_ralph_sysdir:"*) : ;;
+    *) [ -d "$_ralph_sysdir" ] && PATH="$PATH:$_ralph_sysdir" ;;
+  esac
+done
+unset _ralph_sysdir
+export PATH
 _RALPH_PROMPT_FILE="$_RALPH_SCRIPT_DIR/prompt.md"
 _RALPH_ARCHIVE_FILE="$_RALPH_SCRIPT_DIR/archive.txt"
 _RALPH_CONFIDENCE_LOG="$_RALPH_SCRIPT_DIR/confidence.log"

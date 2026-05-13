@@ -168,11 +168,47 @@ business_mode_check() {
 #
 # If the final probe still fails, the environment is genuinely blocking git
 # writes and the caller should treat that as a hard blocker.
+#
+# PATH-stripped environments (the 2026-05-12 agent-template-e6p failure):
+# the diagnostic showed `command not found: git` from inside the function
+# even though /usr/bin/git was present on disk — the script was sourced
+# in a shell whose PATH did not include /usr/bin. Retrying a missing
+# binary 10×2s is pointless wall time. Resolve git to an absolute path
+# once at function entry, with hard-coded fallbacks (`/usr/local/bin/git`,
+# `/usr/bin/git`, `/opt/homebrew/bin/git`); use that absolute path for
+# every git invocation in this function. If nothing resolves, fail
+# immediately with a single clear diagnostic.
+_ralph_resolve_git_binary() {
+  # Prefer PATH lookup so test fixtures that inject a fake `git` via
+  # `PATH=$TMPDIR/bin:$PATH` continue to work. Fall back to standard
+  # system locations when PATH lookup turns up empty (the only failure
+  # mode this branch is meant to defend against).
+  #
+  # The fallback list is env-overridable (`_RALPH_GIT_FALLBACK_PATHS`,
+  # space-separated) so the bats suite can exercise the no-git-anywhere
+  # BLOCKED branch by clearing it without renaming /usr/bin/git.
+  local resolved
+  resolved=$(command -v git 2>/dev/null) || resolved=""
+  if [ -n "$resolved" ]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+  local candidate
+  for candidate in ${_RALPH_GIT_FALLBACK_PATHS-/usr/local/bin/git /usr/bin/git /opt/homebrew/bin/git}; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 ensure_git_index_writable() {
   local repo_root="$1"
   local git_dir index_path lock_path attempt probe_err existing_lock
   local diagnostic_path="$repo_root/.last-landing-diagnostic"
   local diagnostic_buf=""
+  local git_bin
   # Retry budget knobs are env-overridable so the bats failure test can
   # collapse the 10×2s wall time without weakening the runtime defaults.
   local max_attempts="${_RALPH_INDEX_PROBE_ATTEMPTS:-10}"
@@ -188,8 +224,19 @@ ensure_git_index_writable() {
     diagnostic_buf+="$line"$'\n'
   }
 
+  # Resolve git ONCE before any retry loop. A missing binary is not a
+  # transient condition, so retrying it 10 times wastes 20 seconds and
+  # produces 10 identical diagnostic lines. If we cannot resolve git at
+  # all, fail immediately with one clear line and a stable diagnostic.
+  if ! git_bin=$(_ralph_resolve_git_binary); then
+    _ralph_index_diag "ralph: ensure_git_index_writable: BLOCKED: git binary not on PATH and not at /usr/local/bin/git, /usr/bin/git, or /opt/homebrew/bin/git (PATH=$PATH)"
+    printf '%s' "$diagnostic_buf" > "$diagnostic_path" 2>/dev/null || true
+    unset -f _ralph_index_diag
+    return 1
+  fi
+
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-    if ! git_dir=$(git -C "$repo_root" rev-parse --git-dir 2>&1); then
+    if ! git_dir=$("$git_bin" -C "$repo_root" rev-parse --git-dir 2>&1); then
       probe_err="git rev-parse --git-dir failed in $repo_root: $git_dir"
       git_dir=""
       index_path=""
@@ -201,7 +248,7 @@ ensure_git_index_writable() {
       fi
       break
     fi
-    if ! index_path=$(git -C "$repo_root" rev-parse --git-path index 2>&1); then
+    if ! index_path=$("$git_bin" -C "$repo_root" rev-parse --git-path index 2>&1); then
       probe_err="git rev-parse --git-path index failed in $repo_root: $index_path"
       index_path=""
       lock_path=""
@@ -212,7 +259,7 @@ ensure_git_index_writable() {
       fi
       break
     fi
-    if ! lock_path=$(git -C "$repo_root" rev-parse --git-path index.lock 2>&1); then
+    if ! lock_path=$("$git_bin" -C "$repo_root" rev-parse --git-path index.lock 2>&1); then
       probe_err="git rev-parse --git-path index.lock failed in $repo_root: $lock_path"
       lock_path=""
       if [ "$attempt" -lt "$max_attempts" ]; then
@@ -254,6 +301,7 @@ ensure_git_index_writable() {
   done
 
   _ralph_index_diag "ralph: ensure_git_index_writable: GIVING UP after $max_attempts attempts: $probe_err"
+  _ralph_index_diag "ralph: ensure_git_index_writable:   git_bin=$git_bin"
   _ralph_index_diag "ralph: ensure_git_index_writable:   git_dir=$git_dir perms=$(ls -ld "$git_dir" 2>/dev/null || echo missing)"
   _ralph_index_diag "ralph: ensure_git_index_writable:   index=$index_path perms=$(ls -ld "$index_path" 2>/dev/null || echo missing)"
   _ralph_index_diag "ralph: ensure_git_index_writable:   lock=$lock_path perms=$(ls -ld "$lock_path" 2>/dev/null || echo absent)"
