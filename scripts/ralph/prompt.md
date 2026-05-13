@@ -79,8 +79,10 @@ Done when **all** of:
 
 Done when **all** of:
 - You read the full review arc (review artifact + pare-down notes + git diffs from the quartet's commits).
-- Durable patterns have been promoted to `CLAUDE.md` `## Discovered Patterns` (cross-cutting) or `docs/skills/<domain>.md` (domain-specific). Every promoted pattern carries a `model:` tag identifying the model that authored it (e.g., `model: claude-opus-4-6`); on model upgrade, tagged patterns are re-validated or retired. This bounds "model upgrade drift" in the decision register.
-- For every bug class the review uncovered, you asked: "would the system catch this automatically next time?" If no, you added a hook, test, contract, or register row. New regression tests live in `tests/regression/`.
+- Durable patterns and repeated corrections from the arc have been promoted to the right checked-in layer: `CLAUDE.md` `## Discovered Patterns` for cross-cutting rules, `docs/skills/<domain>.md` for task-specific workflows, `docs/failure-modes.md` for newly-exposed failure classes, `docs/decision-register.md` for newly-exposed decision points, or tests/hooks/contracts for gaps that should be caught mechanically.
+- Every promoted pattern carries a `model:` tag identifying the model that authored it (e.g., `model: claude-opus-4-6`); on model upgrade, tagged patterns are re-validated or retired. This bounds "model upgrade drift" in the decision register.
+- Candidate lessons were filtered for generality: only promote lessons that recurred, exposed a missing check or unbounded decision, or are likely to matter again beyond the single story. One-off preferences or story-local corrections do not get promoted as durable repo rules.
+- For every bug class or repeated correction the review uncovered, you asked: "would the system catch this automatically next time?" If no, you added a hook, test, contract, register row, or skill update. New regression tests live in `tests/regression/`.
 - The review artifact at `docs/reviews/<review-bead-id>.md` has been **deleted** — its knowledge is now embedded in durable docs.
 - Commit message: `docs: [bead-id] - <title>` (or `chore:` if no doc changes were needed).
 
