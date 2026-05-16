@@ -117,7 +117,17 @@ EOF
 # --- business_mode_check -------------------------------------------------
 
 @test "business_mode_check: accepts the real repo artifact" {
-  run business_mode_check "$PROJECT_ROOT"
+  # GitHub Actions checks this repository out as `initializer`, while the
+  # template's real local root is `agent-template`. Validate the real files
+  # through a path whose basename matches the checked-in business-mode
+  # artifact so this smoke test stays about artifact consistency, not the
+  # runner's checkout directory name.
+  local artifact_basename linked_root
+  artifact_basename=$(jq -r '.project_root_basename' "$PROJECT_ROOT/docs/business-mode.json")
+  linked_root="$TMPDIR_TEST/$artifact_basename"
+  ln -s "$PROJECT_ROOT" "$linked_root"
+
+  run business_mode_check "$linked_root"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
