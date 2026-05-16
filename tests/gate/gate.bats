@@ -82,7 +82,10 @@ teardown() {
 @test "CI workflow installs security scanners before running checks" {
   local workflow="$PROJECT_ROOT/.github/workflows/ci.yml"
   grep -qF 'name: Install CI security scanners' "$workflow"
-  grep -qF 'raw.githubusercontent.com/gitleaks/gitleaks/master/install.sh' "$workflow"
+  grep -qF 'GITLEAKS_VERSION=8.30.1' "$workflow"
+  grep -qF 'https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${GITLEAKS_ARCHIVE}' "$workflow"
+  grep -qF 'sha256sum -c -' "$workflow"
+  grep -qF 'tar -xzf "$GITLEAKS_ARCHIVE" -C "$HOME/.local/bin" gitleaks' "$workflow"
   grep -qF 'python3 -m pip install --user dep-hallucinator' "$workflow"
   grep -qF 'gitleaks version' "$workflow"
   grep -qF 'dep-hallucinator --help >/dev/null' "$workflow"
