@@ -35,6 +35,17 @@ teardown() {
   rm -rf "$TMPDIR_TEST"
 }
 
+path_without_git() {
+  local bin_dir="$TMPDIR_TEST/no-git-bin"
+  local tool tool_path
+  mkdir -p "$bin_dir"
+  for tool in rm chmod sleep; do
+    tool_path=$(command -v "$tool")
+    ln -sf "$tool_path" "$bin_dir/$tool"
+  done
+  printf '%s\n' "$bin_dir"
+}
+
 # --- tool selection ------------------------------------------------------
 
 @test "ralph.sh advertises claude, codex, and amp as supported tools" {
@@ -372,12 +383,11 @@ EOF
   mkdir -p "$TMPDIR_TEST/repo/.git"
   : > "$TMPDIR_TEST/repo/.git/index"
 
-  # Use PATH=/bin so the function still has rm/chmod/ls (which it relies
-  # on for cleanup and diagnostics) without /usr/bin/git on the lookup
-  # path. /bin on macOS and Linux has the core utilities but no git, so
-  # `command -v git` fails and the fallback branch is the only way the
-  # function can resolve a binary.
-  PATH="/bin" _RALPH_GIT_FALLBACK_PATHS="$TMPDIR_TEST/fallback/git" \
+  # Use an explicit no-git PATH rather than PATH=/bin: some Linux runners
+  # expose /bin/git, while macOS usually does not. The fallback branch must
+  # be exercised deterministically on both platforms.
+  NO_GIT_PATH=$(path_without_git)
+  PATH="$NO_GIT_PATH" _RALPH_GIT_FALLBACK_PATHS="$TMPDIR_TEST/fallback/git" \
     _RALPH_INDEX_PROBE_ATTEMPTS=1 _RALPH_INDEX_PROBE_SLEEP=0 \
     run ensure_git_index_writable "$TMPDIR_TEST/repo"
   [ "$status" -eq 0 ]
@@ -392,7 +402,8 @@ EOF
   # binary (the e6p run wasted 10×2s = 20s with 10 identical lines).
   mkdir -p "$TMPDIR_TEST/repo"
 
-  PATH="/bin" _RALPH_GIT_FALLBACK_PATHS="" \
+  NO_GIT_PATH=$(path_without_git)
+  PATH="$NO_GIT_PATH" _RALPH_GIT_FALLBACK_PATHS="" \
     _RALPH_INDEX_PROBE_ATTEMPTS=10 _RALPH_INDEX_PROBE_SLEEP=2 \
     run ensure_git_index_writable "$TMPDIR_TEST/repo"
   [ "$status" -ne 0 ]
@@ -442,6 +453,10 @@ EOF
 ```
 true
 ```
+
+## Confidence Routing
+
+auto-land: high
 EOF
 
   cat > "$BIN_DIR/bd" <<'EOF'
@@ -472,6 +487,23 @@ EOF
 
   git -C "$TEST_REPO" add CLAUDE.md scripts/ralph/ralph.sh scripts/ralph/lib.sh scripts/ralph/prompt.md scripts/hooks/parsers.sh
   git -C "$TEST_REPO" commit -q -m "init"
+
+  mkdir -p "$TEST_REPO/docs"
+  switch_commit=$(git -C "$TEST_REPO" rev-parse HEAD)
+  cat > "$TEST_REPO/docs/business-mode.json" <<EOF
+{
+  "project_root_basename": "repo",
+  "switch_commit": "$switch_commit",
+  "auto_land_policy": "high",
+  "local_scanners": {
+    "gitleaks": true,
+    "dep_hallucinator": true
+  },
+  "bootstrap_override_retired": true
+}
+EOF
+  git -C "$TEST_REPO" add docs/business-mode.json
+  git -C "$TEST_REPO" commit -q -m "business mode"
 
   printf 'dirty\n' > "$TEST_REPO/local-only.txt"
 

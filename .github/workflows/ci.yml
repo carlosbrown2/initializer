@@ -15,6 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # business_mode_check validates that docs/business-mode.json's
+          # switch_commit exists in repo history, so the gate needs more than
+          # the default depth-1 checkout.
+          fetch-depth: 0
 
       - name: Install system deps (bats, shellcheck, jq)
         run: |

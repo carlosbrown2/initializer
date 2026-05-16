@@ -61,6 +61,7 @@ teardown() {
   # hand-copied gate chain here would drift from CLAUDE.md and turn CI into a
   # separate contract.
   local workflow="$PROJECT_ROOT/.github/workflows/ci.yml"
+  grep -qF 'fetch-depth: 0' "$workflow"
   grep -qF 'source scripts/hooks/parsers.sh' "$workflow"
   grep -qF 'GATE_CMD=$(gate_command_extract CLAUDE.md)' "$workflow"
   grep -qF 'bash -c "$GATE_CMD"' "$workflow"
